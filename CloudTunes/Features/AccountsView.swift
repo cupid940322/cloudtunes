@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 网盘账号管理页
 struct AccountsView: View {
-    @State private var refresh = false
+    @State private var refreshTick = 0
 
     var body: some View {
         NavigationStack {
@@ -16,7 +16,8 @@ struct AccountsView: View {
                 }
             }
             .navigationTitle("我的网盘")
-            .id(refresh)
+            .id(refreshTick)
+            .onAppear { refreshTick += 1 }
         }
     }
 
@@ -45,7 +46,8 @@ struct AccountsView: View {
 
 /// 光鸭：手机号 + 短信验证码登录
 struct GuangyaLoginView: View {
-    @StateObject private var provider = ProviderRegistry.guangya
+    private let provider = ProviderRegistry.guangya
+    @State private var signedIn = ProviderRegistry.guangya.isSignedIn
     @State private var phone = ""
     @State private var code = ""
     @State private var verificationID: String?
@@ -57,12 +59,17 @@ struct GuangyaLoginView: View {
             Section("Client ID（网页版 F12 → 请求头 X-Client-Id，见 README）") {
                 TextField("网页端 Client ID", text: $clientIDDraft)
                     .autocorrectionDisabled()
-                    .onChange(of: clientIDDraft) { CredentialStore.set($1, for: "guangya.clientID") }
+                    .onChange(of: clientIDDraft) { newValue in
+                        CredentialStore.set(newValue, for: "guangya.clientID")
+                    }
             }
-            if provider.isSignedIn {
+            if signedIn {
                 Section {
                     Text("已登录：\(provider.displayName ?? "")")
-                    Button("退出登录", role: .destructive) { provider.signOut() }
+                    Button("退出登录", role: .destructive) {
+                        provider.signOut()
+                        signedIn = false
+                    }
                 }
                 NavigationLink("浏览文件 →") { FileBrowserView(kind: .guangya) }
             } else {
@@ -103,6 +110,7 @@ struct GuangyaLoginView: View {
         Task {
             do {
                 try await provider.signIn(phoneE164: phone, verificationID: verificationID!, code: code)
+                signedIn = true
                 status = "登录成功"
             } catch {
                 status = "登录失败：\(error.localizedDescription)"
@@ -113,7 +121,8 @@ struct GuangyaLoginView: View {
 
 /// 百度：引导注册开放平台 + oob 授权码登录
 struct BaiduLoginView: View {
-    @StateObject private var provider = ProviderRegistry.baidu
+    private let provider = ProviderRegistry.baidu
+    @State private var signedIn = ProviderRegistry.baidu.isSignedIn
     @State private var appKey = CredentialStore.get("baidu.appKey") ?? ""
     @State private var secretKey = CredentialStore.get("baidu.secretKey") ?? ""
     @State private var authCode = ""
@@ -123,14 +132,17 @@ struct BaiduLoginView: View {
         Form {
             Section("开放平台应用（pan.baidu.com/union 创建应用）") {
                 TextField("AppKey", text: $appKey).autocorrectionDisabled()
-                    .onChange(of: appKey) { CredentialStore.set($1, for: "baidu.appKey") }
+                    .onChange(of: appKey) { CredentialStore.set($0, for: "baidu.appKey") }
                 SecureField("SecretKey", text: $secretKey).autocorrectionDisabled()
-                    .onChange(of: secretKey) { CredentialStore.set($1, for: "baidu.secretKey") }
+                    .onChange(of: secretKey) { CredentialStore.set($0, for: "baidu.secretKey") }
             }
-            if provider.isSignedIn {
+            if signedIn {
                 Section {
                     Text("已登录：\(provider.displayName ?? "")")
-                    Button("退出登录", role: .destructive) { provider.signOut() }
+                    Button("退出登录", role: .destructive) {
+                        provider.signOut()
+                        signedIn = false
+                    }
                 }
                 NavigationLink("浏览文件 →") { FileBrowserView(kind: .baidu) }
             } else {
@@ -152,6 +164,7 @@ struct BaiduLoginView: View {
         Task {
             do {
                 try await provider.exchangeCode(authCode.trimmingCharacters(in: .whitespaces))
+                signedIn = true
                 status = "登录成功"
             } catch {
                 status = "登录失败：\(error.localizedDescription)"
@@ -162,15 +175,19 @@ struct BaiduLoginView: View {
 
 /// 夸克：粘贴网页版 Cookie（实验性）
 struct QuarkLoginView: View {
-    @StateObject private var provider = ProviderRegistry.quark
+    private let provider = ProviderRegistry.quark
+    @State private var signedIn = ProviderRegistry.quark.isSignedIn
     @State private var cookie = ""
 
     var body: some View {
         Form {
-            if provider.isSignedIn {
+            if signedIn {
                 Section {
                     Text("已导入 Cookie")
-                    Button("退出登录", role: .destructive) { provider.signOut() }
+                    Button("退出登录", role: .destructive) {
+                        provider.signOut()
+                        signedIn = false
+                    }
                 }
                 NavigationLink("浏览文件 →") { FileBrowserView(kind: .quark) }
             } else {
@@ -179,6 +196,7 @@ struct QuarkLoginView: View {
                         .font(.system(size: 12, design: .monospaced))
                     Button("导入并登录") {
                         provider.setCookie(cookie.trimmingCharacters(in: .whitespacesAndNewlines))
+                        signedIn = !cookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     }
                 }
             }

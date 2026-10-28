@@ -30,7 +30,15 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | tail -n 40
+            build 2>&1 | tee build.log | tail -n 40
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 14
 
       - name: Package unsigned ipa
         run: |

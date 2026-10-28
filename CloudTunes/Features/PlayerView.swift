@@ -8,9 +8,12 @@ struct LibraryView: View {
         NavigationStack {
             Group {
                 if player.currentTrack == nil {
-                    ContentUnavailableView("还没有在播放",
-                                           systemImage: "music.note",
-                                           description: Text("到「网盘」标签页浏览云盘，选择文件夹即可播放"))
+                    VStack(spacing: 10) {
+                        Image(systemName: "music.note").font(.system(size: 48)).foregroundColor(.secondary)
+                        Text("还没有在播放").font(.title3)
+                        Text("到「网盘」标签页浏览云盘，选择文件夹即可播放")
+                            .font(.subheadline).foregroundColor(.secondary)
+                    }
                 } else {
                     NowPlayingView()
                 }

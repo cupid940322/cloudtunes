@@ -17,7 +17,7 @@ enum LRCParser {
                 index += 1
             }
         }
-        return lines.sorted { $0.time < $0.time }
+        return lines.sorted { $0.time < $1.time }
     }
 
     private static func parseTimeTags(_ line: String) -> [TimeInterval] {
