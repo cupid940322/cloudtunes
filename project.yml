@@ -1,0 +1,44 @@
+name: CloudTunes
+options:
+  bundleIdPrefix: com.gysbs
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+targets:
+  CloudTunes:
+    type: application
+    platform: iOS
+    sources:
+      - path: CloudTunes
+    info:
+      path: CloudTunes/Info.plist
+      properties:
+        CFBundleDisplayName: 云音盒
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gysbs.cloudtunes
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
+schemes:
+  CloudTunes:
+    build:
+      targets:
+        CloudTunes: all
+    run:
+      config: Debug

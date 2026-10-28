@@ -1,0 +1,47 @@
+name: Build iOS (unsigned ipa)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (no signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CloudTunes.xcodeproj \
+            -scheme CloudTunes \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tail -n 40
+
+      - name: Package unsigned ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/CloudTunes.app Payload/
+          zip -qry CloudTunes-unsigned.ipa Payload
+          ls -lh CloudTunes-unsigned.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloudTunes-unsigned-ipa
+          path: CloudTunes-unsigned.ipa
+          retention-days: 30

@@ -1,0 +1,13 @@
+# Xcode / 构建
+build/
+*.xcodeproj
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# 临时
+Payload/
+*.ipa
