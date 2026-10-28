@@ -31,10 +31,8 @@
 ## 首次配置
 
 ### 光鸭云盘
-需要网页端 Client ID：
-1. 电脑浏览器打开 https://www.guangyapan.com 并登录；
-2. F12 → Network → 刷新 → 找发往 `api.guangyapan.com` 的请求；
-3. 复制请求头 `X-Client-Id` 的值，填入 App 的「光鸭云盘」登录页。
+Client ID 已内置（`aMe-8VSlkrbQXpUR`，网页端公共客户端标识），**留空即可直接登录**。
+如日后接口调整导致登录失败，才需要手动获取：网页版 F12 → Network → 任意 `api.guangyapan.com` 请求 → 请求头 `X-Client-Id`。
 
 ### 百度网盘
 1. 注册/登录 [百度网盘开放平台](https://pan.baidu.com/union)，创建应用，获得 AppKey / SecretKey，回调 URI 填 `oob`；

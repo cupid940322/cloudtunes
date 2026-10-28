@@ -56,8 +56,8 @@ struct GuangyaLoginView: View {
 
     var body: some View {
         Form {
-            Section("Client ID（网页版 F12 → 请求头 X-Client-Id，见 README）") {
-                TextField("网页端 Client ID", text: $clientIDDraft)
+            Section("Client ID（已内置 aMe-8VSlkrbQXpUR，通常留空即可）") {
+                TextField("留空使用内置 ID", text: $clientIDDraft)
                     .autocorrectionDisabled()
                     .onChange(of: clientIDDraft) { newValue in
                         CredentialStore.set(newValue, for: "guangya.clientID")

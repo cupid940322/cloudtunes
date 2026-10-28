@@ -9,9 +9,23 @@ final class GuangyaProvider: CloudProvider {
     private static let accountBase = URL(string: "https://account.guangyapan.com")!
     private static let apiBase = URL(string: "https://api.guangyapan.com")!
 
-    // X-Client-Id：光鸭网页端公共客户端 ID，需从网页版 F12 抓取（见 README）
+    // X-Client-Id：光鸭网页端公共客户端 ID。
+    // 默认内置社区逆向客户端使用的公共 ID，用户可在设置中覆盖。
+    private static let defaultClientID = "aMe-8VSlkrbQXpUR"
+
     private var clientID: String {
-        CredentialStore.get("guangya.clientID") ?? ""
+        let v = CredentialStore.get("guangya.clientID") ?? ""
+        return v.isEmpty ? Self.defaultClientID : v
+    }
+
+    private static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+
+    /// W3C traceparent: 00-<32hex>-<16hex>-01
+    private static func traceparent() -> String {
+        func hex(_ n: Int) -> String {
+            (0..<n).map { _ in String(format: "%x", Int.random(in: 0...15)) }.joined()
+        }
+        return "00-\(hex(32))-\(hex(16))-01"
     }
 
     // 每次安装生成一个稳定设备 ID
@@ -56,6 +70,10 @@ final class GuangyaProvider: CloudProvider {
             "X-Client-Id": clientID,
             "X-Client-Version": "0.0.1",
             "X-Device-Id": deviceID,
+            "Origin": "https://www.guangyapan.com",
+            "Referer": "https://www.guangyapan.com/",
+            "User-Agent": Self.userAgent,
+            "Traceparent": Self.traceparent(),
         ]
         if auth, let t = accessToken { h["Authorization"] = "Bearer \(t)" }
         if let c = captcha { h["X-Captcha-Token"] = c }
@@ -68,6 +86,10 @@ final class GuangyaProvider: CloudProvider {
             "Content-Type": "application/json",
             "Did": deviceID,
             "Dt": "4",
+            "Origin": "https://www.guangyapan.com",
+            "Referer": "https://www.guangyapan.com/",
+            "User-Agent": Self.userAgent,
+            "Traceparent": Self.traceparent(),
         ]
         if let t = accessToken { h["Authorization"] = "Bearer \(t)" }
         return h
