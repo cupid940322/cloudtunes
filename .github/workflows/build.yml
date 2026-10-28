@@ -64,3 +64,13 @@ jobs:
           name: CloudTunes-unsigned-ipa
           path: CloudTunes-unsigned.ipa
           retention-days: 30
+
+      - name: Publish ipa as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-latest
+          name: CloudTunes 最新安装包
+          body: |
+            云音盒 CloudTunes 未签名 ipa（由 CI 自动构建，可直接用 Sideloadly 签名安装）
+            构建提交：${{ github.sha }}
+          files: CloudTunes-unsigned.ipa
