@@ -116,7 +116,7 @@ final class PlayerManager: NSObject, ObservableObject {
         // 1. 同目录同名 .lrc
         if let lrcFile = await findSiblingLRC(for: track),
            let provider = ProviderRegistry.provider(kind: track.providerKind),
-           let (url, headers) = try? provider.streamURL(file: lrcFile) {
+           let (url, headers) = try? await provider.streamURL(file: lrcFile) {
             var req = URLRequest(url: url)
             headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
             if let (data, _) = try? await URLSession.shared.data(for: req),
