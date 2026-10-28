@@ -1,0 +1,30 @@
+name: Fetch Sideloadly installer
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-sideloadly.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download from official site
+        run: |
+          curl -L --retry 3 --connect-timeout 30 -o SideloadlySetup64.exe https://sideloadly.io/SideloadlySetup64.exe
+          ls -lh SideloadlySetup64.exe
+          sha256sum SideloadlySetup64.exe
+
+      - name: Publish as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sideloadly-installer
+          name: Sideloadly Installer Mirror
+          body: |
+            Sideloadly Windows x64 安装包（官方源 sideloadly.io 拉取，用于国内加速分发）
+            SHA256 见 Workflow 日志
+          files: SideloadlySetup64.exe
