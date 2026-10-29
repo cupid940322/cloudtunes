@@ -153,8 +153,10 @@ final class GuangyaProvider: CloudProvider {
             url: Self.accountBase.appendingPathComponent("/v1/shield/captcha/init"),
             body: initBody,
             headers: accountHeaders())
-        guard let d0 = initResp["data"] as? [String: Any],
-              let captchaToken = d0["captcha_token"] as? String, !captchaToken.isEmpty else {
+        // captcha_token 可能直接在顶层，也可能包在 data 里
+        let captchaToken = (initResp["captcha_token"] as? String)
+            ?? ((initResp["data"] as? [String: Any])?["captcha_token"] as? String)
+        guard let captchaToken, !captchaToken.isEmpty else {
             throw CloudError.parse("安全验证初始化失败：\(initResp)")
         }
         // 2) 发送验证码（带 x-captcha-token）
