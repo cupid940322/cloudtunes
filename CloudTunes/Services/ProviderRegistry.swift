@@ -27,7 +27,7 @@ enum ProviderRegistry {
 
     static func rootID(of kind: CloudKind) -> String {
         switch kind {
-        case .guangya: return "*"
+        case .guangya: return ""
         case .baidu: return "/"
         case .quark: return "0"
         }

@@ -246,7 +246,8 @@ final class GuangyaProvider: CloudProvider {
     // MARK: - CloudProvider
 
     func list(folderID: String) async throws -> [CloudFile] {
-        let root = folderID.isEmpty ? "*" : folderID
+        // 根目录为空字符串（"*" 是「搜索全部文件」，不能用）
+        let root = folderID
         var files: [CloudFile] = []
         var page = 0
         let pageSize = 100
@@ -268,7 +269,7 @@ final class GuangyaProvider: CloudProvider {
             }
             let total = (data["total"] as? NSNumber)?.intValue ?? 0
             page += 1
-            if list.count < pageSize || files.count >= total { break }
+            if list.count < pageSize || files.count >= total || page >= 50 { break }
         }
         return files
     }
