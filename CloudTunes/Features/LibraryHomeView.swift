@@ -456,9 +456,10 @@ struct LibraryDetailView: View {
     }
 
     private func albumGrid(_ lib: MusicLibrary) -> some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
-                  spacing: 18) {
-            ForEach(lib.albums()) { album in
+        let albums = lib.albums()
+        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
+                         spacing: 18) {
+            ForEach(albums) { album in
                 NavigationLink {
                     AlbumDetailView(libraryID: libraryID, albumID: album.id)
                 } label: {
@@ -483,9 +484,10 @@ struct LibraryDetailView: View {
     }
 
     private func artistList(_ lib: MusicLibrary) -> some View {
-        VStack(spacing: 0) {
-            ForEach(lib.artists().indices, id: \.self) { idx in
-                            let artist = lib.artists()[idx]
+        let artists = lib.artists()
+        return VStack(spacing: 0) {
+            ForEach(artists.indices, id: \.self) { idx in
+                let artist = artists[idx]
                 NavigationLink {
                     ArtistDetailView(libraryID: libraryID, artistName: artist.name)
                 } label: {
@@ -505,7 +507,7 @@ struct LibraryDetailView: View {
                     .padding(.vertical, 10)
                 }
                 .buttonStyle(.plain)
-                if idx < lib.artists().count - 1 {
+                if idx < artists.count - 1 {
                     Divider().padding(.leading, 74)
                 }
             }

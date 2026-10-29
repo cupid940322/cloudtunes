@@ -70,42 +70,58 @@ enum MetadataScraper {
         let queryTitle = (result.title?.isEmpty == false) ? result.title! : fallbackTitle
         let queryArtist = (result.artist?.isEmpty == false) ? result.artist : fallbackArtist
 
-        if needOnline, !queryTitle.isEmpty,
-           let match = await MusicSearchService.bestMatch(title: queryTitle, artist: queryArtist) {
-            let info = match.info
-            result.matched = true
-            result.confidence = match.score
-            result.neteaseID = info.neteaseID
+        if needOnline, !queryTitle.isEmpty {
+            var match = await MusicSearchService.bestMatch(title: queryTitle, artist: queryArtist)
 
-            if (result.album?.isEmpty ?? true), let a = info.album, !a.isEmpty {
-                result.album = a
+            // 「歌名-歌手」倒序文件名：正着匹配不到就反过来再试一次
+            var didSwap = false
+            if match == nil, let swappedTitle = queryArtist, !swappedTitle.isEmpty {
+                if let alt = await MusicSearchService.bestMatch(title: swappedTitle, artist: queryTitle) {
+                    match = alt
+                    didSwap = true
+                }
             }
 
-            // 艺术家：内嵌有值绝不覆盖
-            if embeddedArtist?.isEmpty ?? true {
-                if let ar = info.artist, !ar.isEmpty {
-                    if let local = fallbackArtist?.trimmingCharacters(in: .whitespaces), !local.isEmpty {
-                        // 文件名里本来就有艺术家：只有对得上才采纳在线的规范写法
-                        if match.score >= 0.80,
-                           TextMatch.similarity(local, ar) >= 0.5 {
-                            result.artist = ar
+            if let match {
+                let info = match.info
+                result.matched = true
+                result.confidence = match.score
+                result.neteaseID = info.neteaseID
+
+                if (result.album?.isEmpty ?? true), let a = info.album, !a.isEmpty {
+                    result.album = a
+                }
+
+                if didSwap, match.score >= 0.75 {
+                    // 倒序文件名：以在线结果为准，整条纠正过来
+                    if let t = info.title, !t.isEmpty { result.title = t }
+                    if let a = info.artist, !a.isEmpty { result.artist = a }
+                } else {
+                    // 艺术家：内嵌有值绝不覆盖
+                    if embeddedArtist?.isEmpty ?? true {
+                        if let ar = info.artist, !ar.isEmpty {
+                            if let local = fallbackArtist?.trimmingCharacters(in: .whitespaces), !local.isEmpty {
+                                // 文件名里本来就有艺术家：只有对得上才采纳在线的规范写法
+                                if match.score >= 0.80, TextMatch.similarity(local, ar) >= 0.5 {
+                                    result.artist = ar
+                                }
+                            } else if match.score >= 0.75 {
+                                result.artist = ar
+                            }
                         }
-                    } else if match.score >= 0.75 {
-                        result.artist = ar
+                    }
+                    // 标题：内嵌有值绝不覆盖；否则要求与在线标题高度一致才替换
+                    if embeddedTitle?.isEmpty ?? true, let t = info.title, !t.isEmpty {
+                        if TextMatch.similarity(queryTitle, t) >= 0.80 {
+                            result.title = t
+                        }
                     }
                 }
-            }
 
-            // 标题：内嵌有值绝不覆盖；否则要求与在线标题高度一致才替换
-            if embeddedTitle?.isEmpty ?? true, let t = info.title, !t.isEmpty {
-                if TextMatch.similarity(queryTitle, t) >= 0.80 {
-                    result.title = t
+                if result.artworkFile == nil, let cover = info.coverURL,
+                   let data = await MusicSearchService.downloadImage(cover) {
+                    result.artworkFile = saveArtwork(data, key: trackID)
                 }
-            }
-
-            if result.artworkFile == nil, let cover = info.coverURL,
-               let data = await MusicSearchService.downloadImage(cover) {
-                result.artworkFile = saveArtwork(data, key: trackID)
             }
         }
 

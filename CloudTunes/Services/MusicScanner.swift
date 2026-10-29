@@ -32,11 +32,29 @@ enum MusicScanner {
         let cleaned = cleanBase(filename)
         guard !cleaned.isEmpty else { return ParsedName(title: rawBase, artist: nil) }
 
+        // 《歌名》歌手
+        if cleaned.hasPrefix("《"), let close = cleaned.firstIndex(of: "》") {
+            let inner = String(cleaned[cleaned.index(after: cleaned.startIndex)..<close])
+            let rest = String(cleaned[cleaned.index(after: close)...])
+                .trimmingCharacters(in: .whitespaces)
+            if !inner.isEmpty, !rest.isEmpty {
+                return ParsedName(title: inner, artist: sanitizeArtist(rest))
+            }
+        }
+
         if let pair = splitArtistTitle(cleaned) {
-            let artist = sanitizeArtist(pair.0)
-            let title = pair.1.trimmingCharacters(in: .whitespaces)
+            var artist = sanitizeArtist(pair.0)
+            var title = pair.1.trimmingCharacters(in: .whitespaces)
+
+            // "115 - 周杰伦 - 晴天" 这类：左边是无效序号，把右边再拆一次
+            if artist == nil, let inner = splitArtistTitle(title) {
+                if let innerArtist = sanitizeArtist(inner.0) {
+                    artist = innerArtist
+                    title = inner.1.trimmingCharacters(in: .whitespaces)
+                }
+            }
+
             if !title.isEmpty {
-                // 标题部分如果还残留序号，再洗一次
                 let cleanedTitle = stripLeadingIndex(title).trimmingCharacters(in: .whitespaces)
                 return ParsedName(title: cleanedTitle.isEmpty ? title : cleanedTitle, artist: artist)
             }
@@ -115,12 +133,11 @@ enum MusicScanner {
         return false
     }
 
-    /// 去掉开头的曲目序号：01. / 01 - / 01、/ 01) / [01]
+    /// 去掉开头的曲目序号：01. / 01 - / 01、/ 01) / [01] / "01 歌名"
     private static func stripLeadingIndex(_ s: String) -> String {
         let patterns = [
             "^\\s*\\[\\d{1,3}\\]\\s*",
             "^\\s*\\d{1,3}\\s*[\\.、,，:：\\)）\\-_]\\s*",
-            "^\\s*\\d{2,3}\\s+",
         ]
         var t = s
         for p in patterns {
@@ -131,6 +148,15 @@ enum MusicScanner {
                 if !rest.trimmingCharacters(in: .whitespaces).isEmpty {
                     t = rest
                 }
+            }
+        }
+        // "01 歌名"：只有「两位以内数字 + 空格 + 中文」才当序号，避免吃掉 "99 Problems"
+        if let re = try? NSRegularExpression(pattern: "^\\s*\\d{1,2}\\s+"),
+           let m = re.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+           let r = Range(m.range, in: t) {
+            let rest = String(t[r.upperBound...])
+            if rest.containsCJK, !rest.trimmingCharacters(in: .whitespaces).isEmpty {
+                t = rest
             }
         }
         return t
@@ -165,6 +191,9 @@ enum MusicScanner {
 
     private static func sanitizeArtist(_ raw: String) -> String? {
         var a = raw.trimmingCharacters(in: .whitespaces)
+        // 去掉开头的分类标签，如「【华语】」「[经典]」
+        a = a.replacingOccurrences(of: "^\\s*[\\[【（(][^\\]】）)]{0,8}[\\]】）)]\\s*",
+                                   with: "", options: .regularExpression)
         // 去掉结尾的 " -" 残留
         a = a.trimmingCharacters(in: CharacterSet(charactersIn: " -_·"))
         guard !a.isEmpty else { return nil }
