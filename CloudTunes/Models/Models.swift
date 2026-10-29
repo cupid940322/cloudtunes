@@ -43,10 +43,17 @@ struct Track: Identifiable, Hashable {
     let file: CloudFile
     let providerKind: CloudKind
     let accountID: String
+    /// 刮削得到的元数据覆盖（为空则从文件名解析）
+    var titleOverride: String? = nil
+    var artistOverride: String? = nil
+    var album: String? = nil
+    var artworkFile: String? = nil
+    var duration: Double? = nil
+
     /// 从文件名解析出的标题
-    var title: String { MusicScanner.parseTitle(file.name) }
+    var title: String { titleOverride ?? MusicScanner.parseTitle(file.name) }
     /// 从文件名解析出的艺术家（可能为空）
-    var artist: String? { MusicScanner.parseArtist(file.name) }
+    var artist: String? { artistOverride ?? MusicScanner.parseArtist(file.name) }
 }
 
 struct LyricLine: Identifiable, Hashable {

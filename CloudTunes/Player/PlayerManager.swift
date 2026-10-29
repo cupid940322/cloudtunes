@@ -1,6 +1,8 @@
 import AVFoundation
 import Combine
 import Foundation
+import MediaPlayer
+import UIKit
 
 /// 全局播放器：AVPlayer 流媒体播放 + 歌词状态
 final class PlayerManager: NSObject, ObservableObject {
@@ -31,6 +33,56 @@ final class PlayerManager: NSObject, ObservableObject {
         try? session.setCategory(.playback, mode: .default)
         try? session.setActive(true)
         addTimeObserver()
+        setupRemoteCommands()
+    }
+
+    // MARK: - 锁屏 / 耳机控制
+
+    private func setupRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.addTarget { [weak self] _ in
+            self?.player.play(); self?.isPlaying = true; return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            self?.player.pause(); self?.isPlaying = false; return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            self?.togglePlay(); return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self, let t = self.currentTrack,
+                  let p = ProviderRegistry.provider(kind: t.providerKind) else { return .commandFailed }
+            self.next(provider: p); return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self, let t = self.currentTrack,
+                  let p = ProviderRegistry.provider(kind: t.providerKind) else { return .commandFailed }
+            self.previous(provider: p); return .success
+        }
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            self.seek(to: e.positionTime); return .success
+        }
+    }
+
+    private func updateNowPlaying() {
+        guard let track = currentTrack else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: track.title,
+            MPMediaItemPropertyArtist: track.artist ?? "未知艺术家",
+        ]
+        if let album = track.album, !album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = album }
+        if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        if let url = MetadataScraper.artworkURL(file: track.artworkFile),
+           let image = UIImage(contentsOfFile: url.path) {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     private func addTimeObserver() {
@@ -73,6 +125,7 @@ final class PlayerManager: NSObject, ObservableObject {
                     self.player.replaceCurrentItem(with: item)
                     self.player.play()
                     self.isPlaying = true
+                    self.updateNowPlaying()
                 }
                 await self.loadLyrics(for: track)
             } catch {
@@ -92,6 +145,7 @@ final class PlayerManager: NSObject, ObservableObject {
             player.play()
             isPlaying = true
         }
+        updateNowPlaying()
     }
 
     func next(provider: CloudProvider) {
@@ -106,6 +160,15 @@ final class PlayerManager: NSObject, ObservableObject {
 
     func seek(to seconds: TimeInterval) {
         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        currentTime = seconds
+        updateNowPlaying()
+    }
+
+    /// 当前曲目封面（本地缓存），供 UI 使用
+    var currentArtwork: UIImage? {
+        guard let file = currentTrack?.artworkFile,
+              let url = MetadataScraper.artworkURL(file: file) else { return nil }
+        return UIImage(contentsOfFile: url.path)
     }
 
     // MARK: - 歌词

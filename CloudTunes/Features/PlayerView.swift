@@ -42,13 +42,17 @@ struct NowPlayingView: View {
     }
 
     private var trackInfo: some View {
-        VStack(spacing: 4) {
-            Text(player.nowPlayingTitle.isEmpty ? "—" : player.nowPlayingTitle)
-                .font(.title2).fontWeight(.semibold).lineLimit(1)
-            Text(player.currentTrack?.artist ?? "未知艺术家")
-                .font(.subheadline).foregroundColor(.secondary)
+        VStack(spacing: 10) {
+            ArtworkThumb(file: player.currentTrack?.artworkFile, size: 220, corner: 14)
+                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                .padding(.top, 8)
+            VStack(spacing: 4) {
+                Text(player.nowPlayingTitle.isEmpty ? "—" : player.nowPlayingTitle)
+                    .font(.title2).fontWeight(.semibold).lineLimit(1)
+                Text(player.currentTrack?.artist ?? "未知艺术家")
+                    .font(.subheadline).foregroundColor(.secondary)
+            }
         }
-        .padding(.top)
     }
 
     private var controls: some View {
