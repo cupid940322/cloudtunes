@@ -8,6 +8,18 @@ import UIKit
 final class PlayerManager: NSObject, ObservableObject {
     static let shared = PlayerManager()
 
+    enum RepeatMode: Int {
+        case off = 0, all = 1, one = 2
+
+        var icon: String {
+            switch self {
+            case .off, .all: return "repeat"
+            case .one: return "repeat.1"
+            }
+        }
+        var isActive: Bool { self != .off }
+    }
+
     @Published var queue: [Track] = []
     @Published var currentIndex: Int = -1
     @Published var isPlaying = false
@@ -16,12 +28,16 @@ final class PlayerManager: NSObject, ObservableObject {
     @Published var lyricLines: [LyricLine] = []
     @Published var lyricSourceNote: String = ""
     @Published var nowPlayingTitle: String = ""
+    @Published var repeatMode: RepeatMode = .off
+    @Published var isShuffled = false
 
     private var player = AVPlayer()
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
     /// 当前曲目的直链请求头（百度需要 UA）
     private var currentHeaders: [String: String] = [:]
+    /// 随机播放前的原始顺序
+    private var originalQueue: [Track] = []
 
     // MARK: - 播放结束自动下一首（含后台/熄屏）
 
@@ -39,10 +55,22 @@ final class PlayerManager: NSObject, ObservableObject {
             guard let self else { return }
             guard let t = self.currentTrack,
                   let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
+
+            // 单曲循环：回到开头继续放
+            if self.repeatMode == .one {
+                self.player.seek(to: .zero)
+                self.player.play()
+                self.isPlaying = true
+                self.currentTime = 0
+                self.updateNowPlaying()
+                return
+            }
             if self.currentIndex + 1 < self.queue.count {
                 self.playAt(self.currentIndex + 1, provider: p)
+            } else if self.repeatMode == .all, !self.queue.isEmpty {
+                // 列表循环：回到第一首
+                self.playAt(0, provider: p)
             } else {
-                // 队列结束：停止并复位
                 self.isPlaying = false
                 self.currentTime = 0
                 self.player.seek(to: .zero)
@@ -127,8 +155,50 @@ final class PlayerManager: NSObject, ObservableObject {
 
     /// 用某网盘的文件列表填充队列并从 index 开始播放
     func play(tracks: [Track], at index: Int, provider: CloudProvider) {
-        queue = tracks
-        playAt(index, provider: provider)
+        originalQueue = tracks
+        if isShuffled, tracks.indices.contains(index) {
+            let current = tracks[index]
+            let rest = tracks.enumerated()
+                .filter { $0.offset != index }
+                .map { $0.element }
+                .shuffled()
+            queue = [current] + rest
+            playAt(0, provider: provider)
+        } else {
+            queue = tracks
+            playAt(index, provider: provider)
+        }
+    }
+
+    /// 随机播放开关
+    func setShuffled(_ on: Bool) {
+        isShuffled = on
+        guard let current = currentTrack else { return }
+        if on {
+            if originalQueue.isEmpty { originalQueue = queue }
+            let rest = queue.filter { $0.id != current.id }.shuffled()
+            queue = [current] + rest
+            currentIndex = 0
+        } else if !originalQueue.isEmpty {
+            queue = originalQueue
+            currentIndex = queue.firstIndex(where: { $0.id == current.id }) ?? 0
+        }
+    }
+
+    func cycleRepeatMode() {
+        repeatMode = RepeatMode(rawValue: (repeatMode.rawValue + 1) % 3) ?? .off
+    }
+
+    func playNext() {
+        guard let t = currentTrack,
+              let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
+        next(provider: p)
+    }
+
+    func playPrevious() {
+        guard let t = currentTrack,
+              let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
+        previous(provider: p)
     }
 
     func playAt(_ index: Int, provider: CloudProvider) {
@@ -155,6 +225,7 @@ final class PlayerManager: NSObject, ObservableObject {
                     self.player.play()
                     self.isPlaying = true
                     self.updateNowPlaying()
+                    LibraryStore.shared.markPlayed(track.id)
                 }
                 await self.loadLyrics(for: track)
             } catch {
@@ -178,8 +249,11 @@ final class PlayerManager: NSObject, ObservableObject {
     }
 
     func next(provider: CloudProvider) {
-        guard currentIndex + 1 < queue.count else { return }
-        playAt(currentIndex + 1, provider: provider)
+        if currentIndex + 1 < queue.count {
+            playAt(currentIndex + 1, provider: provider)
+        } else if repeatMode == .all, !queue.isEmpty {
+            playAt(0, provider: provider)
+        }
     }
 
     func previous(provider: CloudProvider) {

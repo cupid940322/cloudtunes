@@ -15,6 +15,14 @@ protocol CloudProvider {
     func streamURL(file: CloudFile) async throws -> (url: URL, headers: [String: String])
 }
 
+/// 登录状态变更广播（供 UI 刷新「已登录」标识）
+final class AuthState: ObservableObject {
+    static let shared = AuthState()
+    @Published private(set) var tick = 0
+
+    func bump() { tick += 1 }
+}
+
 /// 简单的持久化 KV 存储（网盘凭证）。
 /// 注意：正式版应迁移到 Keychain，此处先用 UserDefaults 方便调试。
 enum CredentialStore {

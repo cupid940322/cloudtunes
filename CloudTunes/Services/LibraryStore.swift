@@ -1,19 +1,27 @@
 import Foundation
 
-/// 音乐库管理：扫描云盘文件夹、递归收集音频、持久化、后台刮削
+/// 音乐库管理：扫描云盘文件夹、递归收集音频、持久化、后台并发刮削，
+/// 另外负责收藏与最近播放（跨库）。
 @MainActor
 final class LibraryStore: ObservableObject {
     static let shared = LibraryStore()
 
     @Published private(set) var libraries: [MusicLibrary] = []
     @Published private(set) var progress: [String: ScanProgress] = [:]
+    @Published private(set) var favoriteIDs: Set<String> = []
+    @Published private(set) var recentIDs: [String] = []
 
-    private let storageURL: URL = {
+    private let storageURL: URL
+    private let favoritesKey = "cloudtunes.favorites"
+    private let recentKey = "cloudtunes.recent"
+    private let maxRecent = 60
+
+    init() {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appendingPathComponent("libraries.json")
-    }()
-
-    init() { load() }
+        storageURL = dir.appendingPathComponent("libraries.json")
+        load()
+        loadPrefs()
+    }
 
     // MARK: - 持久化
 
@@ -28,7 +36,79 @@ final class LibraryStore: ObservableObject {
         try? data.write(to: storageURL)
     }
 
+    private func loadPrefs() {
+        let defaults = UserDefaults.standard
+        if let favs = defaults.array(forKey: favoritesKey) as? [String] {
+            favoriteIDs = Set(favs)
+        }
+        if let recent = defaults.array(forKey: recentKey) as? [String] {
+            recentIDs = recent
+        }
+    }
+
+    private func savePrefs() {
+        let defaults = UserDefaults.standard
+        defaults.set(Array(favoriteIDs), forKey: favoritesKey)
+        defaults.set(recentIDs, forKey: recentKey)
+    }
+
+    // MARK: - 查询
+
     func library(id: String) -> MusicLibrary? { libraries.first { $0.id == id } }
+
+    func allTracks() -> [TrackRef] {
+        libraries.flatMap { lib in lib.tracks.map { TrackRef(track: $0, library: lib) } }
+    }
+
+    func track(id: String) -> TrackRef? {
+        allTracks().first { $0.id == id }
+    }
+
+    var favoriteTracks: [TrackRef] {
+        allTracks().filter { favoriteIDs.contains($0.id) }
+    }
+
+    var recentTracks: [TrackRef] {
+        let index = Dictionary(uniqueKeysWithValues: allTracks().map { ($0.id, $0) })
+        return recentIDs.compactMap { index[$0] }
+    }
+
+    func search(_ query: String) -> [TrackRef] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        return allTracks().filter { item in
+            item.track.title.lowercased().contains(q)
+                || (item.track.artist?.lowercased().contains(q) ?? false)
+                || (item.track.album?.lowercased().contains(q) ?? false)
+        }
+    }
+
+    // MARK: - 收藏 / 最近播放
+
+    func isFavorite(_ trackID: String) -> Bool { favoriteIDs.contains(trackID) }
+
+    func toggleFavorite(_ trackID: String) {
+        if favoriteIDs.contains(trackID) {
+            favoriteIDs.remove(trackID)
+        } else {
+            favoriteIDs.insert(trackID)
+        }
+        savePrefs()
+    }
+
+    func markPlayed(_ trackID: String) {
+        recentIDs.removeAll { $0 == trackID }
+        recentIDs.insert(trackID, at: 0)
+        if recentIDs.count > maxRecent { recentIDs = Array(recentIDs.prefix(maxRecent)) }
+        savePrefs()
+    }
+
+    func clearRecent() {
+        recentIDs = []
+        savePrefs()
+    }
+
+    // MARK: - 库管理
 
     func removeLibrary(id: String) {
         libraries.removeAll { $0.id == id }
@@ -43,31 +123,167 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - 扫描
 
-    /// 新建音乐库并扫描。folder 为云端文件夹。
-    func addLibrary(name: String, providerKind: CloudKind, folder: CloudFile) async {
+    /// 新建音乐库并扫描。folder 可以是任意层级的文件夹；includeSubfolders 决定是否递归。
+    func addLibrary(name: String,
+                    providerKind: CloudKind,
+                    folder: CloudFile,
+                    includeSubfolders: Bool = true) async {
         guard let provider = ProviderRegistry.provider(kind: providerKind) else { return }
         let libID = UUID().uuidString
-        progress[libID] = ScanProgress(phase: "扫描目录…")
+        progress[libID] = ScanProgress(phase: includeSubfolders ? "扫描目录…" : "读取目录…")
 
-        var lib = MusicLibrary(id: libID,
-                               name: name.isEmpty ? folder.name : name,
+        let lib = MusicLibrary(id: libID,
+                               name: name.isEmpty ? (folder.name.isEmpty ? providerKind.rawValue : folder.name) : name,
                                providerKindRaw: providerKind.rawValue,
                                folderID: folder.id,
                                folderName: folder.name,
                                tracks: [],
                                createdAt: Date(),
-                               lastScanAt: nil)
+                               lastScanAt: nil,
+                               includeSubfolders: includeSubfolders)
         libraries.append(lib)
         save()
 
-        // 1) 递归收集音频文件
-        var queue: [(id: String, name: String)] = [(folder.id, folder.name)]
-        var visited = Set<String>()
+        let found = await collect(provider: provider, kind: providerKind, root: folder,
+                                  includeSubfolders: includeSubfolders, libID: libID)
+
+        if let idx = libraries.firstIndex(where: { $0.id == libID }) {
+            libraries[idx].tracks = found
+            libraries[idx].lastScanAt = Date()
+        }
+        save()
+
+        progress[libID]?.phase = found.isEmpty ? "没有找到音乐文件" : "入库完成，开始刮削…"
+        progress[libID]?.totalToScrape = found.count
+
+        await scrapeAll(libraryID: libID, providerKind: providerKind)
+        progress[libID] = nil
+    }
+
+    /// 重新扫描已有库（只补新增文件，随后补刮未刮过的）
+    func rescan(libraryID: String) async {
+        guard let lib = library(id: libraryID),
+              let provider = ProviderRegistry.provider(kind: lib.providerKind) else { return }
+        progress[libraryID] = ScanProgress(phase: "重新扫描…")
+        let root = CloudFile(id: lib.folderID, name: lib.folderName, size: 0, isFolder: true)
+        let found = await collect(provider: provider, kind: lib.providerKind, root: root,
+                                  includeSubfolders: lib.scansSubfolders, libID: libraryID)
+
+        var known = Set(lib.tracks.map { $0.fileID })
+        var added = 0
+        if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
+            for t in found where !known.contains(t.fileID) {
+                libraries[idx].tracks.append(t)
+                known.insert(t.fileID)
+                added += 1
+            }
+            libraries[idx].lastScanAt = Date()
+        }
+        save()
+        progress[libraryID]?.phase = "新增 \(added) 首，开始刮削…"
+        await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
+        progress[libraryID] = nil
+    }
+
+    /// 强制重刮全部：把元数据回滚成文件名解析结果，再重新匹配（用于修正以前的错误）
+    func rescrapeAll(libraryID: String) async {
+        guard let lib = library(id: libraryID) else { return }
+        progress[libraryID] = ScanProgress(phase: "重置元数据…")
+
+        if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
+            for i in libraries[idx].tracks.indices {
+                let t = libraries[idx].tracks[i]
+                let parsed = MusicScanner.parse(t.fileName)
+                libraries[idx].tracks[i].title = parsed.title
+                libraries[idx].tracks[i].artist = parsed.artist
+                // 专辑回退到所在文件夹名
+                if let parent = t.parentName, t.parentID != lib.folderID {
+                    libraries[idx].tracks[i].album = parent
+                } else {
+                    libraries[idx].tracks[i].album = nil
+                }
+                libraries[idx].tracks[i].scraped = false
+                libraries[idx].tracks[i].confidence = nil
+                libraries[idx].tracks[i].metaSource = "filename"
+                libraries[idx].tracks[i].neteaseID = nil
+            }
+        }
+        save()
+        await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
+        progress[libraryID] = nil
+    }
+
+    /// 只重刮单曲（不动其他）
+    func rescrapeTrack(libraryID: String, trackID: String) async {
+        guard let lib = library(id: libraryID),
+              let item = lib.tracks.first(where: { $0.id == trackID }),
+              let provider = ProviderRegistry.provider(kind: lib.providerKind) else { return }
+        let file = CloudFile(id: item.fileID, name: item.fileName, size: item.size,
+                             isFolder: false, modifiedAt: nil, extra: ["parentID": item.parentID])
+        guard let link = try? await provider.streamURL(file: file) else { return }
+        let meta = await MetadataScraper.scrape(url: link.url, headers: link.headers, trackID: item.id,
+                                                fallbackTitle: item.title, fallbackArtist: item.artist)
+        updateTrack(libraryID: libraryID, trackID: trackID) { t in
+            if let v = meta.title, !v.isEmpty { t.title = v }
+            if let v = meta.artist, !v.isEmpty { t.artist = v }
+            if let v = meta.album, !v.isEmpty { t.album = v }
+            if let v = meta.duration { t.duration = v }
+            if let v = meta.artworkFile { t.artworkFile = v }
+            if let v = meta.neteaseID { t.neteaseID = v }
+            t.confidence = meta.matched ? meta.confidence : (t.confidence ?? 1)
+            t.metaSource = meta.matched ? "online" : "filename"
+            t.scraped = true
+        }
+        save()
+    }
+
+    // MARK: - 手动修正
+
+    func updateMeta(libraryID: String, trackID: String, title: String, artist: String?, album: String?) {
+        updateTrack(libraryID: libraryID, trackID: trackID) { t in
+            if !title.isEmpty { t.title = title }
+            t.artist = (artist?.isEmpty == false) ? artist : nil
+            t.album = (album?.isEmpty == false) ? album : nil
+            t.confidence = 1.0
+            t.metaSource = "manual"
+            t.scraped = true
+        }
+        save()
+    }
+
+    /// 用在线候选结果替换元数据与封面
+    func applyMatch(libraryID: String, trackID: String, info: MusicSearchService.SongInfo) async {
+        var artworkName: String?
+        if let cover = info.coverURL, let data = await MusicSearchService.downloadImage(cover) {
+            artworkName = MetadataScraper.saveArtwork(data, key: trackID)
+        }
+        updateTrack(libraryID: libraryID, trackID: trackID) { t in
+            if let v = info.title, !v.isEmpty { t.title = v }
+            if let v = info.artist, !v.isEmpty { t.artist = v }
+            if let v = info.album, !v.isEmpty { t.album = v }
+            if let v = info.duration { t.duration = v }
+            t.neteaseID = info.neteaseID
+            if let a = artworkName { t.artworkFile = a }
+            t.confidence = 1.0
+            t.metaSource = "manual"
+            t.scraped = true
+        }
+        save()
+    }
+
+    // MARK: - 内部：目录收集
+
+    private func collect(provider: CloudProvider, kind: CloudKind, root: CloudFile,
+                         includeSubfolders: Bool, libID: String) async -> [LibraryTrack] {
         var found: [LibraryTrack] = []
-        let maxFolders = 500
-        let maxTracks = 5000
+        var queue: [(id: String, name: String)] = [(root.id, root.name)]
+        var visited = Set<String>()
+        let maxFolders = 800
+        let maxTracks = 8000
+        let now = Date()
 
         while !queue.isEmpty, visited.count < maxFolders, found.count < maxTracks {
+            if Task.isCancelled { break }
             let current = queue.removeFirst()
             if visited.contains(current.id) { continue }
             visited.insert(current.id)
@@ -77,83 +293,41 @@ final class LibraryStore: ObservableObject {
             guard let items = try? await ProviderRegistry.listWithParent(provider, folderID: current.id) else { continue }
             for item in items {
                 if item.isFolder {
-                    queue.append((item.id, item.name))
-                } else if MusicScanner.isAudioFile(item.name) {
-                    let parsedTitle = MusicScanner.parseTitle(item.name)
-                    let parsedArtist = MusicScanner.parseArtist(item.name)
-                    found.append(LibraryTrack(
-                        id: "\(providerKind.rawValue)-\(item.id)",
-                        fileID: item.id,
-                        fileName: item.name,
-                        size: item.size,
-                        parentID: current.id,
-                        title: parsedTitle,
-                        artist: parsedArtist,
-                        // 专辑名先用所在文件夹名兜底
-                        album: current.id == folder.id ? nil : current.name,
-                        duration: nil,
-                        artworkFile: nil,
-                        scraped: false))
+                    if includeSubfolders { queue.append((item.id, item.name)) }
+                    continue
                 }
+                guard MusicScanner.isAudioFile(item.name) else { continue }
+                let parsed = MusicScanner.parse(item.name)
+                let isRoot = current.id == root.id
+                found.append(LibraryTrack(
+                    id: "\(kind.rawValue)-\(item.id)",
+                    fileID: item.id,
+                    fileName: item.name,
+                    size: item.size,
+                    parentID: current.id,
+                    title: parsed.title,
+                    artist: parsed.artist,
+                    album: isRoot ? nil : current.name,
+                    duration: nil,
+                    artworkFile: nil,
+                    scraped: false,
+                    neteaseID: nil,
+                    addedAt: now,
+                    metaSource: "filename",
+                    confidence: nil,
+                    parentName: isRoot ? nil : current.name))
             }
             progress[libID]?.foundTracks = found.count
         }
-
-        // 2) 立即入库（先用文件名信息，UI 马上可用）
-        if let idx = libraries.firstIndex(where: { $0.id == libID }) {
-            libraries[idx].tracks = found
-            libraries[idx].lastScanAt = Date()
-            lib = libraries[idx]
-        }
-        save()
-        progress[libID]?.phase = "入库完成，开始刮削封面/标签…"
-        progress[libID]?.totalToScrape = found.count
-
-        // 3) 后台逐个刮削元数据与封面
-        await scrapeAll(libraryID: libID, providerKind: providerKind)
-
-        progress[libID] = nil
+        return found
     }
 
-    /// 重新扫描已有库（新增文件 / 补刮元数据）
-    func rescan(libraryID: String) async {
-        guard let lib = library(id: libraryID),
-              let provider = ProviderRegistry.provider(kind: lib.providerKind) else { return }
-        progress[libraryID] = ScanProgress(phase: "重新扫描…")
-        var known = Set(lib.tracks.map { $0.fileID })
-        var queue: [(id: String, name: String)] = [(lib.folderID, lib.folderName)]
-        var visited = Set<String>()
-        var added = 0
+    // MARK: - 内部：并发刮削
 
-        while !queue.isEmpty, visited.count < 500 {
-            let current = queue.removeFirst()
-            if visited.contains(current.id) { continue }
-            visited.insert(current.id)
-            progress[libraryID]?.scannedFolders = visited.count
-            guard let items = try? await ProviderRegistry.listWithParent(provider, folderID: current.id) else { continue }
-            for item in items {
-                if item.isFolder { queue.append((item.id, item.name)); continue }
-                guard MusicScanner.isAudioFile(item.name), !known.contains(item.id) else { continue }
-                known.insert(item.id)
-                let t = LibraryTrack(id: "\(lib.providerKind.rawValue)-\(item.id)",
-                                     fileID: item.id, fileName: item.name, size: item.size,
-                                     parentID: current.id,
-                                     title: MusicScanner.parseTitle(item.name),
-                                     artist: MusicScanner.parseArtist(item.name),
-                                     album: current.name, duration: nil, artworkFile: nil, scraped: false)
-                if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
-                    libraries[idx].tracks.append(t)
-                }
-                added += 1
-            }
-        }
-        save()
-        progress[libraryID]?.phase = "新增 \(added) 首，开始刮削…"
-        await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
-        progress[libraryID] = nil
+    private struct ScrapeOutcome: Sendable {
+        let trackID: String
+        let result: MetadataScraper.Result?
     }
-
-    // MARK: - 刮削
 
     private func scrapeAll(libraryID: String, providerKind: CloudKind) async {
         guard let provider = ProviderRegistry.provider(kind: providerKind),
@@ -161,31 +335,62 @@ final class LibraryStore: ObservableObject {
         let pending = lib.tracks.filter { !$0.scraped }
         progress[libraryID]?.totalToScrape = lib.tracks.count
         var done = lib.tracks.count - pending.count
+        progress[libraryID]?.scrapedTracks = done
 
-        for track in pending {
+        let batchSize = 4
+        var cursor = 0
+        while cursor < pending.count {
             if Task.isCancelled { break }
-            progress[libraryID]?.scrapedTracks = done
-            progress[libraryID]?.phase = "刮削：\(track.title)"
-            let file = CloudFile(id: track.fileID, name: track.fileName, size: track.size,
-                                 isFolder: false, modifiedAt: nil, extra: ["parentID": track.parentID])
-            if let link = try? await provider.streamURL(file: file) {
-                let meta = await MetadataScraper.scrape(url: link.url, headers: link.headers, trackID: track.id,
-                                                        fallbackTitle: track.title, fallbackArtist: track.artist)
-                updateTrack(libraryID: libraryID, trackID: track.id) { t in
-                    if let v = meta.title, !v.isEmpty { t.title = v }
-                    if let v = meta.artist, !v.isEmpty { t.artist = v }
-                    if let v = meta.album, !v.isEmpty { t.album = v }
-                    if let v = meta.duration { t.duration = v }
-                    if let v = meta.artworkFile { t.artworkFile = v }
-                    if let v = meta.neteaseID { t.neteaseID = v }
-                    t.scraped = true
+            let upper = min(cursor + batchSize, pending.count)
+            let batch = Array(pending[cursor..<upper])
+
+            let results = await withTaskGroup(of: ScrapeOutcome.self) { group in
+                for track in batch {
+                    group.addTask {
+                        let file = CloudFile(id: track.fileID, name: track.fileName, size: track.size,
+                                             isFolder: false, modifiedAt: nil,
+                                             extra: ["parentID": track.parentID])
+                        guard let link = try? await provider.streamURL(file: file) else {
+                            return ScrapeOutcome(trackID: track.id, result: nil)
+                        }
+                        let meta = await MetadataScraper.scrape(url: link.url,
+                                                                headers: link.headers,
+                                                                trackID: track.id,
+                                                                fallbackTitle: track.title,
+                                                                fallbackArtist: track.artist)
+                        return ScrapeOutcome(trackID: track.id, result: meta)
+                    }
                 }
-            } else {
-                updateTrack(libraryID: libraryID, trackID: track.id) { $0.scraped = true }
+                var collected: [ScrapeOutcome] = []
+                for await item in group { collected.append(item) }
+                return collected
             }
-            done += 1
+
+            for item in results {
+                if let meta = item.result {
+                    updateTrack(libraryID: libraryID, trackID: item.trackID) { t in
+                        if let v = meta.title, !v.isEmpty { t.title = v }
+                        if let v = meta.artist, !v.isEmpty { t.artist = v }
+                        if let v = meta.album, !v.isEmpty { t.album = v }
+                        if let v = meta.duration { t.duration = v }
+                        if let v = meta.artworkFile { t.artworkFile = v }
+                        if let v = meta.neteaseID { t.neteaseID = v }
+                        if meta.matched { t.confidence = meta.confidence }
+                        t.metaSource = meta.matched ? "online" : "filename"
+                        t.scraped = true
+                    }
+                } else {
+                    updateTrack(libraryID: libraryID, trackID: item.trackID) { $0.scraped = true }
+                }
+            }
+
+            done += results.count
             progress[libraryID]?.scrapedTracks = done
-            if done % 8 == 0 { save() }
+            if let total = progress[libraryID]?.totalToScrape {
+                progress[libraryID]?.phase = "刮削 \(done)/\(total)"
+            }
+            save()
+            cursor += batchSize
         }
         save()
     }

@@ -1,45 +1,40 @@
 import SwiftUI
 
-/// 网盘账号管理页
-struct AccountsView: View {
-    @State private var refreshTick = 0
+/// 网盘账号一行（供「我的」页使用）
+struct ProviderRow: View {
+    let kind: CloudKind
 
     var body: some View {
-        NavigationStack {
-            List {
-                ForEach(CloudKind.allCases) { kind in
-                    NavigationLink {
-                        providerDetail(kind: kind)
-                    } label: {
-                        accountRow(kind)
-                    }
-                }
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(color.opacity(0.15))
+                    .frame(width: 38, height: 38)
+                Image(systemName: kind.icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(color)
             }
-            .navigationTitle("我的网盘")
-            .id(refreshTick)
-            .onAppear { refreshTick += 1 }
-        }
-    }
-
-    @ViewBuilder
-    private func providerDetail(kind: CloudKind) -> some View {
-        switch kind {
-        case .guangya: GuangyaLoginView()
-        case .baidu: BaiduLoginView()
-        case .quark: QuarkLoginView()
-        }
-    }
-
-    private func accountRow(_ kind: CloudKind) -> some View {
-        HStack {
-            Image(systemName: kind.icon).frame(width: 30)
-            VStack(alignment: .leading) {
-                Text(kind.rawValue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(kind.rawValue).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                 let p = ProviderRegistry.provider(kind: kind)
                 Text(p?.isSignedIn == true ? "已登录 · \(p?.displayName ?? "")" : "未登录")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(p?.isSignedIn == true ? Color.green : Color.secondary)
             }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.quaternary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var color: Color {
+        switch kind {
+        case .guangya: return Theme.accent
+        case .baidu: return Color(red: 0.30, green: 0.48, blue: 0.98)
+        case .quark: return Color(red: 0.35, green: 0.62, blue: 0.98)
         }
     }
 }
@@ -69,6 +64,7 @@ struct GuangyaLoginView: View {
                     Button("退出登录", role: .destructive) {
                         provider.signOut()
                         signedIn = false
+                        AuthState.shared.bump()
                     }
                 }
                 NavigationLink("浏览文件 →") { FileBrowserView(kind: .guangya) }
@@ -111,6 +107,7 @@ struct GuangyaLoginView: View {
             do {
                 try await provider.signIn(phoneE164: phone, verificationID: verificationID!, code: code)
                 signedIn = true
+                AuthState.shared.bump()
                 status = "登录成功"
             } catch {
                 status = "登录失败：\(error.localizedDescription)"
@@ -142,6 +139,7 @@ struct BaiduLoginView: View {
                     Button("退出登录", role: .destructive) {
                         provider.signOut()
                         signedIn = false
+                        AuthState.shared.bump()
                     }
                 }
                 NavigationLink("浏览文件 →") { FileBrowserView(kind: .baidu) }
@@ -165,6 +163,7 @@ struct BaiduLoginView: View {
             do {
                 try await provider.exchangeCode(authCode.trimmingCharacters(in: .whitespaces))
                 signedIn = true
+                AuthState.shared.bump()
                 status = "登录成功"
             } catch {
                 status = "登录失败：\(error.localizedDescription)"
@@ -187,6 +186,7 @@ struct QuarkLoginView: View {
                     Button("退出登录", role: .destructive) {
                         provider.signOut()
                         signedIn = false
+                        AuthState.shared.bump()
                     }
                 }
                 NavigationLink("浏览文件 →") { FileBrowserView(kind: .quark) }
@@ -197,6 +197,7 @@ struct QuarkLoginView: View {
                     Button("导入并登录") {
                         provider.setCookie(cookie.trimmingCharacters(in: .whitespacesAndNewlines))
                         signedIn = !cookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        AuthState.shared.bump()
                     }
                 }
             }

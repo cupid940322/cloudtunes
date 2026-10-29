@@ -1,225 +1,536 @@
 import SwiftUI
 
-/// 播放页：当前曲目 + 控制条 + 歌词（滚动/手动搜索）
-struct LibraryView: View {
+/// 全屏播放页：封面模糊背景 + 大封面 / 歌词切换 + 随机循环
+struct PlayerView: View {
     @ObservedObject private var player = PlayerManager.shared
+    @ObservedObject private var store = LibraryStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var showLyrics = false
+    @State private var showLyricSearch = false
+    @State private var showEdit = false
+    @State private var dragValue: Double = 0
+    @State private var isDragging = false
+
+    private var track: Track? { player.currentTrack }
+    private var artwork: UIImage? {
+        ArtworkCache.shared.image(named: track?.artworkFile, target: 700)
+    }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if player.currentTrack == nil {
-                    VStack(spacing: 10) {
-                        Image(systemName: "music.note").font(.system(size: 48)).foregroundColor(.secondary)
-                        Text("还没有在播放").font(.title3)
-                        Text("到「网盘」标签页浏览云盘，选择文件夹即可播放")
-                            .font(.subheadline).foregroundColor(.secondary)
+        GeometryReader { geo in
+            ZStack {
+                background
+                VStack(spacing: 0) {
+                    topBar
+                    Spacer(minLength: 8)
+                    if showLyrics {
+                        lyricPanel
+                            .frame(maxHeight: .infinity)
+                    } else {
+                        coverPanel(side: min(geo.size.width - 76, 330))
                     }
-                } else {
-                    NowPlayingView()
+                    Spacer(minLength: 8)
+                    titleRow
+                    progressSection
+                    controlRow
+                    bottomBar
+                }
+                .padding(.horizontal, 26)
+                .padding(.top, 4)
+                .padding(.bottom, 18)
+            }
+        }
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showLyricSearch) {
+            LyricSearchSheet()
+        }
+        .sheet(isPresented: $showEdit) {
+            if let track, let ref = store.track(id: track.id) {
+                EditTrackSheet(libraryID: ref.library.id, track: ref.track)
+            }
+        }
+    }
+
+    // MARK: 背景
+
+    private var background: some View {
+        ZStack {
+            Color.black
+            if let artwork {
+                Image(uiImage: artwork)
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: 55)
+                    .opacity(0.75)
+                    .ignoresSafeArea()
+            } else {
+                LinearGradient(colors: [Color(red: 0.28, green: 0.20, blue: 0.32),
+                                        Color(red: 0.10, green: 0.10, blue: 0.14)],
+                               startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea()
+            }
+            LinearGradient(colors: [Color.black.opacity(0.15), Color.black.opacity(0.62)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            Color.black.opacity(0.18).ignoresSafeArea()
+        }
+    }
+
+    // MARK: 顶栏
+
+    private var topBar: some View {
+        HStack {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(.white.opacity(0.12), in: Circle())
+            }
+            Spacer()
+            VStack(spacing: 2) {
+                Text("正在播放").font(.caption2.weight(.semibold)).foregroundStyle(.white.opacity(0.65))
+                Text(track?.album ?? "汤圆云音盒")
+                    .font(.caption).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+            }
+            Spacer()
+            Button {
+                showEdit = true
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(.white.opacity(0.12), in: Circle())
+            }
+            .disabled(track == nil)
+        }
+    }
+
+    // MARK: 封面
+
+    private func coverPanel(side: CGFloat) -> some View {
+        VStack {
+            Spacer(minLength: 0)
+            CoverView(file: track?.artworkFile, size: side, corner: 22, showsShadow: true)
+                .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+                .scaleEffect(player.isPlaying ? 1 : 0.94)
+                .animation(.spring(response: 0.45, dampingFraction: 0.8), value: player.isPlaying)
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.28)) { showLyrics = true }
+                }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: 歌词
+
+    private var lyricPanel: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text(player.lyricSourceNote.isEmpty ? "暂无歌词" : player.lyricSourceNote)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    showLyricSearch = true
+                } label: {
+                    Label("搜歌词", systemImage: "magnifyingglass")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.8))
                 }
             }
-            .navigationTitle("播放")
-        }
-    }
-}
+            .padding(.horizontal, 4)
 
-struct NowPlayingView: View {
-    @ObservedObject private var player = PlayerManager.shared
-    @State private var manualQuery = ""
-    @State private var searchResults: [LyricsService.Candidate] = []
-    @State private var showSearch = false
-
-    var body: some View {
-        VStack(spacing: 16) {
-            trackInfo
-            controls
-            progressBar
-            lyricHeader
-            LyricsListView()
+            LyricScrollView()
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.28)) { showLyrics = false }
+                }
         }
-        .padding()
-        .sheet(isPresented: $showSearch) { manualSearchSheet }
+        .padding(.vertical, 8)
     }
 
-    private var trackInfo: some View {
-        VStack(spacing: 10) {
-            ArtworkThumb(file: player.currentTrack?.artworkFile, size: 220, corner: 14)
-                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-                .padding(.top, 8)
-            VStack(spacing: 4) {
+    // MARK: 标题
+
+    private var titleRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(player.nowPlayingTitle.isEmpty ? "—" : player.nowPlayingTitle)
-                    .font(.title2).fontWeight(.semibold).lineLimit(1)
-                Text(player.currentTrack?.artist ?? "未知艺术家")
-                    .font(.subheadline).foregroundColor(.secondary)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(track?.artist ?? "未知艺术家")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.65))
+                    .lineLimit(1)
+            }
+            Spacer()
+            if let id = track?.id {
+                Button {
+                    store.toggleFavorite(id)
+                } label: {
+                    Image(systemName: store.isFavorite(id) ? "heart.fill" : "heart")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(store.isFavorite(id) ? Theme.accent : .white.opacity(0.85))
+                        .frame(width: 38, height: 38)
+                }
             }
         }
+        .padding(.bottom, 14)
     }
 
-    private var controls: some View {
-        HStack(spacing: 40) {
-            Button { prevAction() } label: { Image(systemName: "backward.fill").font(.title2) }
-            Button { player.togglePlay() } label: {
-                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 56))
-            }
-            Button { nextAction() } label: { Image(systemName: "forward.fill").font(.title2) }
-        }
-        .tint(.primary)
-    }
+    // MARK: 进度
 
-    private var progressBar: some View {
-        VStack(spacing: 2) {
+    private var progressSection: some View {
+        VStack(spacing: 6) {
             Slider(
                 value: Binding(
-                    get: { player.currentTime },
-                    set: { player.seek(to: $0) }
+                    get: { isDragging ? dragValue : player.currentTime },
+                    set: { dragValue = $0 }
                 ),
-                in: 0...max(player.duration, 1))
+                in: 0...max(player.duration, 1),
+                onEditingChanged: { editing in
+                    isDragging = editing
+                    if !editing { player.seek(to: dragValue) }
+                }
+            )
+            .tint(.white)
+
             HStack {
-                Text(player.currentTime.formattedTime)
+                Text((isDragging ? dragValue : player.currentTime).formattedTime)
                 Spacer()
                 Text(player.duration.formattedTime)
             }
-            .font(.caption2).foregroundColor(.secondary)
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.6))
         }
+        .padding(.bottom, 12)
     }
 
-    private var lyricHeader: some View {
-        HStack {
-            Text(player.lyricSourceNote.isEmpty ? " " : player.lyricSourceNote)
-                .font(.caption).foregroundColor(.secondary)
-            Spacer()
+    // MARK: 控制
+
+    private var controlRow: some View {
+        HStack(spacing: 0) {
             Button {
-                showSearch = true
+                player.setShuffled(!player.isShuffled)
             } label: {
-                Label("搜歌词", systemImage: "magnifyingglass").font(.caption)
+                Image(systemName: "shuffle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(player.isShuffled ? Theme.accent : .white.opacity(0.55))
             }
-        }
-    }
+            .frame(maxWidth: .infinity)
 
-    private var manualSearchSheet: some View {
-        NavigationStack {
-            List {
-                Section("关键词（默认填入当前曲目）") {
-                    TextField("歌名 歌手", text: $manualQuery)
-                        .onAppear { if manualQuery.isEmpty {
-                            manualQuery = [player.currentTrack?.artist, player.currentTrack?.title]
-                                .compactMap { $0 }.joined(separator: " ")
-                        } }
-                    Button("搜索 LRCLIB") { doSearch() }
+            Button {
+                player.playPrevious()
+            } label: {
+                Image(systemName: "backward.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.white)
+            }
+            .frame(maxWidth: .infinity)
+
+            Button {
+                player.togglePlay()
+            } label: {
+                ZStack {
+                    Circle().fill(.white).frame(width: 68, height: 68)
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundStyle(.black)
+                        .offset(x: player.isPlaying ? 0 : 2)
                 }
-                ForEach(searchResults) { c in
-                    Button {
-                        apply(candidate: c)
-                    } label: {
-                        VStack(alignment: .leading) {
-                            Text("\(c.artistName) - \(c.trackName)")
-                            Text(c.synced ? "带时间轴 ✓" : "纯文本")
-                                .font(.caption)
-                                .foregroundColor(c.synced ? .green : .secondary)
-                        }
-                    }
-                }
+                .shadow(color: .black.opacity(0.25), radius: 12, y: 6)
             }
-            .navigationTitle("在线歌词搜索")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button("完成") { showSearch = false }
+            .frame(maxWidth: .infinity)
+
+            Button {
+                player.playNext()
+            } label: {
+                Image(systemName: "forward.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.white)
             }
+            .frame(maxWidth: .infinity)
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { player.cycleRepeatMode() }
+            } label: {
+                Image(systemName: player.repeatMode.icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(player.repeatMode.isActive ? Theme.accent : .white.opacity(0.55))
+            }
+            .frame(maxWidth: .infinity)
         }
+        .padding(.bottom, 18)
     }
 
-    private func prevAction() {
-        guard let t = player.currentTrack,
-              let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
-        player.previous(provider: p)
-    }
+    // MARK: 底部工具
 
-    private func nextAction() {
-        guard let t = player.currentTrack,
-              let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
-        player.next(provider: p)
-    }
+    private var bottomBar: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.28)) { showLyrics.toggle() }
+            } label: {
+                Label(showLyrics ? "封面" : "歌词",
+                      systemImage: showLyrics ? "photo" : "text.quote")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            .frame(maxWidth: .infinity)
 
-    private func doSearch() {
-        let q = manualQuery
-        Task {
-            let parts = q.components(separatedBy: " ")
-            let results = (try? await LyricsService.search(
-                title: parts.count > 1 ? parts.dropFirst().joined(separator: " ") : q,
-                artist: parts.count > 1 ? parts.first : nil)) ?? []
-            searchResults = results
+            Button {
+                showLyricSearch = true
+            } label: {
+                Label("歌词源", systemImage: "music.note.list")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            .frame(maxWidth: .infinity)
+
+            Text("\(player.currentIndex + 1)/\(max(player.queue.count, 1))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(maxWidth: .infinity)
         }
-    }
-
-    private func apply(candidate: LyricsService.Candidate) {
-        let parsed = candidate.syncedLyrics.map { LRCParser.parse($0) } ?? []
-        player.lyricLines = parsed
-        player.lyricSourceNote = "歌词来源：手动搜索（\(candidate.artistName)）"
-        if parsed.isEmpty, let plain = candidate.plain {
-            player.lyricLines = plain.components(separatedBy: .newlines)
-                .enumerated().map { LyricLine(id: $0.offset, time: -1, text: $0.element) }
-        }
-        showSearch = false
     }
 }
 
-/// 歌词滚动列表：跟随播放进度高亮
-struct LyricsListView: View {
+// MARK: - 歌词滚动
+
+struct LyricScrollView: View {
     @ObservedObject private var player = PlayerManager.shared
     @State private var autoScroll = true
 
     var body: some View {
-        if player.lyricLines.isEmpty {
-            Spacer()
-            Text("暂无歌词").foregroundColor(.secondary)
-            Spacer()
-        } else if player.lyricLines.allSatisfy({ $0.time < 0 }) {
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(player.lyricLines) { line in
-                        Text(line.text).frame(maxWidth: .infinity)
+        Group {
+            if player.lyricLines.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "text.quote")
+                        .font(.system(size: 26, weight: .light))
+                        .foregroundStyle(.white.opacity(0.35))
+                    Text("暂无歌词")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.45))
+                    Button("在线搜索歌词") {
+                        // 由外层按钮处理
                     }
+                    .hidden()
                 }
-            }
-        } else {
-            ScrollViewReader { proxy in
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if player.lyricLines.allSatisfy({ $0.time < 0 }) {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
+                    VStack(spacing: 12) {
                         ForEach(player.lyricLines) { line in
                             Text(line.text)
-                                .foregroundColor(highlight(line) ? .primary : .secondary)
-                                .font(highlight(line) ? .body.weight(.semibold) : .body)
-                                .id(line.id)
+                                .font(.body)
+                                .foregroundStyle(.white.opacity(0.75))
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }
-                    .padding(.vertical, 40)
+                    .padding(.vertical, 30)
                 }
-                .onChange(of: player.currentTime) { t in
-                    guard autoScroll else { return }
-                    if let idx = activeIndex(at: t) {
-                        withAnimation(.easeInOut(duration: 0.25)) {
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(showsIndicators: false) {
+                        LazyVStack(spacing: 16) {
+                            ForEach(player.lyricLines) { line in
+                                Text(line.text.isEmpty ? " " : line.text)
+                                    .font(active(line) ? .title3.weight(.semibold) : .body)
+                                    .foregroundStyle(active(line)
+                                                     ? Color.white
+                                                     : Color.white.opacity(0.38))
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: .infinity)
+                                    .id(line.id)
+                                    .animation(.easeInOut(duration: 0.25), value: player.currentTime)
+                            }
+                        }
+                        .padding(.vertical, 80)
+                    }
+                    .mask(
+                        LinearGradient(colors: [.clear, .black, .black, .clear],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
+                    .onChange(of: player.currentTime) { _ in
+                        guard autoScroll, let idx = activeIndex() else { return }
+                        withAnimation(.easeInOut(duration: 0.3)) {
                             proxy.scrollTo(player.lyricLines[idx].id, anchor: .center)
                         }
                     }
                 }
-                .onTapGesture { autoScroll.toggle() }
             }
         }
     }
 
-    private func highlight(_ line: LyricLine) -> Bool {
-        guard let idx = player.lyricLines.firstIndex(where: { $0.id == line.id }) else { return false }
-        return activeIndex(at: player.currentTime) == idx
+    private func active(line: LyricLine) -> Bool {
+        activeIndex() == player.lyricLines.firstIndex(where: { $0.id == line.id })
     }
 
-    private func activeIndex(at time: TimeInterval) -> Int? {
+    private func activeIndex() -> Int? {
         var result: Int?
-        for (i, line) in player.lyricLines.enumerated() where line.time <= time + 0.2 {
+        for (i, line) in player.lyricLines.enumerated() where line.time <= player.currentTime + 0.25 {
             result = i
         }
         return result
+    }
+}
+
+// MARK: - 手动搜歌词
+
+struct LyricSearchSheet: View {
+    @ObservedObject private var player = PlayerManager.shared
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var query = ""
+    @State private var results: [LyricsService.Candidate] = []
+    @State private var neteaseResults: [MusicSearchService.SongInfo] = []
+    @State private var searching = false
+    @State private var message = ""
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("歌名 歌手", text: $query)
+                            .submitLabel(.search)
+                            .onSubmit { doSearch() }
+                        Button("搜索") { doSearch() }.font(.footnote.weight(.semibold))
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                    if searching {
+                        ProgressView("搜索中…").padding()
+                    }
+                    if !message.isEmpty {
+                        Text(message).font(.footnote).foregroundStyle(.secondary)
+                    }
+
+                    if !neteaseResults.isEmpty {
+                        group(title: "网易云候选") {
+                            ForEach(neteaseResults.indices, id: \.self) { idx in
+                            let s = neteaseResults[idx]
+                                Button {
+                                    applyNetease(s)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(s.title ?? "—").font(.subheadline).foregroundStyle(.primary)
+                                        Text("\(s.artist ?? "—") · \(s.album ?? "—")")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 14).padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                                if idx < neteaseResults.count - 1 { Divider().padding(.leading, 14) }
+                            }
+                        }
+                    }
+
+                    if !results.isEmpty {
+                        group(title: "LRCLIB") {
+                            ForEach(results.indices, id: \.self) { idx in
+                            let c = results[idx]
+                                Button {
+                                    applyLRCLIB(c)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(c.artistName) - \(c.trackName)")
+                                            .font(.subheadline).foregroundStyle(.primary)
+                                        Text(c.synced ? "带时间轴 ✓" : "纯文本")
+                                            .font(.caption)
+                                            .foregroundStyle(c.synced ? .green : .secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 14).padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                                if idx < results.count - 1 { Divider().padding(.leading, 14) }
+                            }
+                        }
+                    }
+                }
+                .padding(Theme.pagePadding)
+            }
+            .background(Theme.background)
+            .navigationTitle("歌词来源")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .onAppear {
+                if query.isEmpty {
+                    query = [player.currentTrack?.artist, player.currentTrack?.title]
+                        .compactMap { $0 }.joined(separator: " ")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func group<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 0) { content() }
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    private func doSearch() {
+        let parts = query.components(separatedBy: " ")
+        let title = parts.count > 1 ? parts.dropFirst().joined(separator: " ") : query
+        let artist = parts.count > 1 ? parts.first : nil
+        searching = true
+        message = ""
+        Task {
+            let lrcList = try? await LyricsService.search(title: title, artist: artist)
+            let neList = await MusicSearchService.candidates(title: title, artist: artist, limit: 6)
+            await MainActor.run {
+                results = lrcList ?? []
+                neteaseResults = neList.filter { $0.neteaseID != nil }
+                searching = false
+                if results.isEmpty && neteaseResults.isEmpty { message = "没有找到，换个关键词试试" }
+            }
+        }
+    }
+
+    private func applyLRCLIB(_ c: LyricsService.Candidate) {
+        let parsed = c.syncedLyrics.map { LRCParser.parse($0) } ?? []
+        if parsed.isEmpty, let plain = c.plain {
+            player.lyricLines = plain.components(separatedBy: .newlines)
+                .enumerated().map { LyricLine(id: $0.offset, time: -1, text: $0.element) }
+        } else {
+            player.lyricLines = parsed
+        }
+        player.lyricSourceNote = "歌词来源：LRCLIB（\(c.artistName)）"
+        dismiss()
+    }
+
+    private func applyNetease(_ s: MusicSearchService.SongInfo) {
+        guard let id = s.neteaseID else { return }
+        Task {
+            let text = await MusicSearchService.neteaseLyrics(id: id)
+            await MainActor.run {
+                if let text {
+                    let parsed = LRCParser.parse(text)
+                    player.lyricLines = parsed
+                    player.lyricSourceNote = "歌词来源：网易云（\(s.artist ?? "")）"
+                } else {
+                    message = "这首歌在网易云没有歌词"
+                }
+                dismiss()
+            }
+        }
     }
 }
 
