@@ -309,66 +309,87 @@ struct LyricScrollView: View {
     var body: some View {
         Group {
             if player.lyricLines.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "text.quote")
-                        .font(.system(size: 26, weight: .light))
-                        .foregroundStyle(.white.opacity(0.35))
-                    Text("暂无歌词")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.45))
-                    Button("在线搜索歌词") {
-                        // 由外层按钮处理
-                    }
-                    .hidden()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                emptyView
             } else if player.lyricLines.allSatisfy({ $0.time < 0 }) {
-                ScrollView {
-                    VStack(spacing: 12) {
-                        ForEach(player.lyricLines) { line in
-                            Text(line.text)
-                                .font(.body)
-                                .foregroundStyle(.white.opacity(0.75))
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                    }
-                    .padding(.vertical, 30)
-                }
+                plainView
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        LazyVStack(spacing: 16) {
-                            ForEach(player.lyricLines) { line in
-                                Text(line.text.isEmpty ? " " : line.text)
-                                    .font(active(line) ? .title3.weight(.semibold) : .body)
-                                    .foregroundStyle(active(line)
-                                                     ? Color.white
-                                                     : Color.white.opacity(0.38))
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: .infinity)
-                                    .id(line.id)
-                                    .animation(.easeInOut(duration: 0.25), value: player.currentTime)
-                            }
-                        }
-                        .padding(.vertical, 80)
-                    }
-                    .mask(
-                        LinearGradient(colors: [.clear, .black, .black, .clear],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
-                    .onChange(of: player.currentTime) { _ in
-                        guard autoScroll, let idx = activeIndex() else { return }
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            proxy.scrollTo(player.lyricLines[idx].id, anchor: .center)
-                        }
-                    }
-                }
+                syncedView
             }
         }
     }
 
-    private func active(line: LyricLine) -> Bool {
-        activeIndex() == player.lyricLines.firstIndex(where: { $0.id == line.id })
+    private var emptyView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "text.quote")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(Color.white.opacity(0.35))
+            Text("暂无歌词")
+                .font(.subheadline)
+                .foregroundStyle(Color.white.opacity(0.45))
+            Text("点右上角「搜歌词」可手动匹配")
+                .font(.caption2)
+                .foregroundStyle(Color.white.opacity(0.3))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var plainView: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                ForEach(player.lyricLines) { line in
+                    Text(line.text)
+                        .font(.body)
+                        .foregroundStyle(Color.white.opacity(0.75))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+            .padding(.vertical, 30)
+        }
+    }
+
+    private var syncedView: some View {
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 16) {
+                    ForEach(player.lyricLines) { line in
+                        lineView(line)
+                    }
+                }
+                .padding(.vertical, 80)
+            }
+            .mask(fadeMask)
+            .onChange(of: player.currentTime) { _ in
+                handleTick(proxy: proxy)
+            }
+        }
+    }
+
+    private func lineView(_ line: LyricLine) -> some View {
+        let isActive: Bool = active(line)
+        return Text(line.text.isEmpty ? " " : line.text)
+            .font(isActive ? Font.title3.weight(.semibold) : Font.body)
+            .foregroundStyle(isActive ? Color.white : Color.white.opacity(0.38))
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .id(line.id)
+    }
+
+    private var fadeMask: LinearGradient {
+        LinearGradient(colors: [Color.clear, Color.black, Color.black, Color.clear],
+                       startPoint: .top, endPoint: .bottom)
+    }
+
+    private func handleTick(proxy: ScrollViewProxy) {
+        guard autoScroll, let idx = activeIndex() else { return }
+        let target = player.lyricLines[idx].id
+        withAnimation(.easeInOut(duration: 0.3)) {
+            proxy.scrollTo(target, anchor: .center)
+        }
+    }
+
+    private func active(_ line: LyricLine) -> Bool {
+        guard let idx = activeIndex() else { return false }
+        return player.lyricLines[idx].id == line.id
     }
 
     private func activeIndex() -> Int? {

@@ -55,6 +55,8 @@ struct Track: Identifiable, Hashable {
     var title: String { titleOverride ?? MusicScanner.parseTitle(file.name) }
     /// 从文件名解析出的艺术家（可能为空）
     var artist: String? { artistOverride ?? MusicScanner.parseArtist(file.name) }
+    /// 展示用艺术家
+    var displayArtist: String { (artist?.isEmpty == false) ? artist! : "未知艺术家" }
 }
 
 struct LyricLine: Identifiable, Hashable {
