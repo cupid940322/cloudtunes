@@ -23,6 +23,34 @@ final class PlayerManager: NSObject, ObservableObject {
     /// 当前曲目的直链请求头（百度需要 UA）
     private var currentHeaders: [String: String] = [:]
 
+    // MARK: - 播放结束自动下一首（含后台/熄屏）
+
+    private func observeEnd(of item: AVPlayerItem) {
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleItemEnded(_:)),
+                                               name: .AVPlayerItemDidPlayToEndTime, object: item)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleItemEnded(_:)),
+                                               name: .AVPlayerItemFailedToPlayToEndTime, object: item)
+    }
+
+    @objc private func handleItemEnded(_ note: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let t = self.currentTrack,
+                  let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
+            if self.currentIndex + 1 < self.queue.count {
+                self.playAt(self.currentIndex + 1, provider: p)
+            } else {
+                // 队列结束：停止并复位
+                self.isPlaying = false
+                self.currentTime = 0
+                self.player.seek(to: .zero)
+                self.updateNowPlaying()
+            }
+        }
+    }
+
     var currentTrack: Track? {
         (0..<queue.count).contains(currentIndex) ? queue[currentIndex] : nil
     }
@@ -122,6 +150,7 @@ final class PlayerManager: NSObject, ObservableObject {
                         "AVURLAssetHTTPHeaderFieldsKey": link.headers,
                     ])
                     let item = AVPlayerItem(asset: asset)
+                    self.observeEnd(of: item)
                     self.player.replaceCurrentItem(with: item)
                     self.player.play()
                     self.isPlaying = true
@@ -194,7 +223,20 @@ final class PlayerManager: NSObject, ObservableObject {
                 }
             }
         }
-        // 2. LRCLIB
+        // 2. 网易云歌词（中文歌命中率最高）
+        if let text = await LyricsService.neteaseLyrics(title: track.title,
+                                                        artist: track.artist,
+                                                        neteaseID: track.neteaseID) {
+            let lines = LRCParser.parse(text)
+            if !lines.isEmpty {
+                await MainActor.run {
+                    lyricLines = lines
+                    lyricSourceNote = "歌词来源：网易云音乐"
+                }
+                return
+            }
+        }
+        // 3. LRCLIB
         if let candidates = try? await LyricsService.search(title: track.title, artist: track.artist),
            let first = candidates.first(where: { $0.synced }) ?? candidates.first {
             let parsed = first.syncedLyrics.map { LRCParser.parse($0) } ?? []

@@ -49,6 +49,7 @@ struct Track: Identifiable, Hashable {
     var album: String? = nil
     var artworkFile: String? = nil
     var duration: Double? = nil
+    var neteaseID: Int? = nil
 
     /// 从文件名解析出的标题
     var title: String { titleOverride ?? MusicScanner.parseTitle(file.name) }

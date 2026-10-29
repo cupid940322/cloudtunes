@@ -19,7 +19,7 @@ targets:
     info:
       path: CloudTunes/Info.plist
       properties:
-        CFBundleDisplayName: 云音盒
+        CFBundleDisplayName: 汤圆云音盒
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
@@ -35,6 +35,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.gysbs.cloudtunes
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 schemes:
   CloudTunes:
     build:

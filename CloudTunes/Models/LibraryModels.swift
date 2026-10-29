@@ -67,6 +67,7 @@ struct LibraryTrack: Identifiable, Codable, Hashable {
     var duration: Double?
     var artworkFile: String?  // Documents/Artwork 下的文件名
     var scraped: Bool         // 是否已刮削元数据
+    var neteaseID: Int?       // 网易云歌曲 ID（用于歌词匹配）
 
     var displayArtist: String { artist?.isEmpty == false ? artist! : "未知艺术家" }
     var displayAlbum: String { album?.isEmpty == false ? album! : "未知专辑" }
@@ -82,7 +83,8 @@ struct LibraryTrack: Identifiable, Codable, Hashable {
               artistOverride: artist,
               album: album,
               artworkFile: artworkFile,
-              duration: duration)
+              duration: duration,
+              neteaseID: neteaseID)
     }
 }
 

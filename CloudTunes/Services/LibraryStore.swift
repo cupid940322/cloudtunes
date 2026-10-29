@@ -169,13 +169,15 @@ final class LibraryStore: ObservableObject {
             let file = CloudFile(id: track.fileID, name: track.fileName, size: track.size,
                                  isFolder: false, modifiedAt: nil, extra: ["parentID": track.parentID])
             if let link = try? await provider.streamURL(file: file) {
-                let meta = await MetadataScraper.scrape(url: link.url, headers: link.headers, trackID: track.id)
+                let meta = await MetadataScraper.scrape(url: link.url, headers: link.headers, trackID: track.id,
+                                                        fallbackTitle: track.title, fallbackArtist: track.artist)
                 updateTrack(libraryID: libraryID, trackID: track.id) { t in
                     if let v = meta.title, !v.isEmpty { t.title = v }
                     if let v = meta.artist, !v.isEmpty { t.artist = v }
                     if let v = meta.album, !v.isEmpty { t.album = v }
                     if let v = meta.duration { t.duration = v }
                     if let v = meta.artworkFile { t.artworkFile = v }
+                    if let v = meta.neteaseID { t.neteaseID = v }
                     t.scraped = true
                 }
             } else {

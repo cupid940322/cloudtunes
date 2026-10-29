@@ -13,10 +13,13 @@ enum MetadataScraper {
         var album: String?
         var duration: Double?
         var artworkFile: String?
+        var neteaseID: Int?
     }
 
-    /// 刮削单个文件（需要直链）
-    static func scrape(url: URL, headers: [String: String], trackID: String) async -> Result {
+    /// 刮削单个文件（需要直链）。
+    /// 元数据优先级：内嵌标签 → 网易云 → QQ音乐；封面：内嵌 → 网易云 → QQ → iTunes
+    static func scrape(url: URL, headers: [String: String], trackID: String,
+                       fallbackTitle: String? = nil, fallbackArtist: String? = nil) async -> Result {
         var result = Result()
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
 
@@ -46,9 +49,27 @@ enum MetadataScraper {
             }
         }
 
-        // iTunes 兜底封面
-        if result.artworkFile == nil, let title = result.title, !title.isEmpty {
-            let artist = result.artist ?? ""
+        // 在线匹配：缺封面或缺专辑信息时
+        let needArtwork = result.artworkFile == nil
+        let needAlbum = (result.album?.isEmpty ?? true)
+        if needArtwork || needAlbum {
+            let queryTitle = (result.title?.isEmpty == false ? result.title! : (fallbackTitle ?? ""))
+            let queryArtist = result.artist ?? fallbackArtist
+            if !queryTitle.isEmpty, let info = await MusicSearchService.bestMatch(title: queryTitle, artist: queryArtist) {
+                if needAlbum, let a = info.album, !a.isEmpty { result.album = a }
+                if (result.artist?.isEmpty ?? true), let ar = info.artist, !ar.isEmpty { result.artist = ar }
+                if result.title?.isEmpty ?? true, let t = info.title, !t.isEmpty { result.title = t }
+                result.neteaseID = info.neteaseID
+                if needArtwork, let cover = info.coverURL,
+                   let data = await MusicSearchService.downloadImage(cover) {
+                    result.artworkFile = saveArtwork(data, key: trackID)
+                }
+            }
+        }
+
+        // 最后兜底 iTunes 封面
+        if result.artworkFile == nil, let title = result.title ?? fallbackTitle, !title.isEmpty {
+            let artist = result.artist ?? fallbackArtist ?? ""
             if let data = await fetchITunesArtwork(title: title, artist: artist) {
                 result.artworkFile = saveArtwork(data, key: trackID)
             }

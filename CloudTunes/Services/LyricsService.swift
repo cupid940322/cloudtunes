@@ -47,6 +47,18 @@ enum LyricsService {
         let syncedLyrics: String?
     }
 
+    /// 网易云歌词（优先用已刮削到的 ID，否则按歌名搜索）
+    static func neteaseLyrics(title: String, artist: String?, neteaseID: Int?) async -> String? {
+        if let id = neteaseID, let lrc = await MusicSearchService.neteaseLyrics(id: id) {
+            return lrc
+        }
+        let list = await MusicSearchService.neteaseSearch(title: title, artist: artist, limit: 1)
+        if let id = list.first?.neteaseID {
+            return await MusicSearchService.neteaseLyrics(id: id)
+        }
+        return nil
+    }
+
     static func search(title: String, artist: String?) async throws -> [Candidate] {
         var comps = URLComponents(string: "https://lrclib.net/api/search")!
         var items = [URLQueryItem(name: "track_name", value: title)]
