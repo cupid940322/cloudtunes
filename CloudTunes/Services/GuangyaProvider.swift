@@ -164,11 +164,14 @@ final class GuangyaProvider: CloudProvider {
             url: Self.accountBase.appendingPathComponent("/v1/auth/verification"),
             body: ["phone_number": phoneE164, "target": "ANY", "client_id": clientID],
             headers: accountHeaders(captcha: captchaToken))
-        guard let vid = r["data"] as? [String: Any], let id = vid["verification_id"] as? String else {
+        // verification_id 可能在顶层或 data 下
+        let verificationID = (r["verification_id"] as? String)
+            ?? ((r["data"] as? [String: Any])?["verification_id"] as? String)
+        guard let verificationID, !verificationID.isEmpty else {
             throw CloudError.parse("发送验证码失败: \(r)")
         }
         CredentialStore.set(phoneE164, for: "guangya.phone")
-        return id
+        return verificationID
     }
 
     /// 第 2 步：校验验证码 → verification_token
@@ -177,10 +180,12 @@ final class GuangyaProvider: CloudProvider {
             url: Self.accountBase.appendingPathComponent("/v1/auth/verification/verify"),
             body: ["verification_id": verificationID, "verification_code": code, "client_id": clientID],
             headers: accountHeaders())
-        guard let d = r["data"] as? [String: Any], let t = d["verification_token"] as? String else {
+        let vt = (r["verification_token"] as? String)
+            ?? ((r["data"] as? [String: Any])?["verification_token"] as? String)
+        guard let vt, !vt.isEmpty else {
             throw CloudError.parse("验证码校验失败: \(r)")
         }
-        return t
+        return vt
     }
 
     /// 第 3 步：signin 换取 access/refresh token
@@ -195,12 +200,14 @@ final class GuangyaProvider: CloudProvider {
                 "client_id": clientID,
             ],
             headers: accountHeaders())
-        guard let d = r["data"] as? [String: Any],
-              let at = d["access_token"] as? String else {
+        let at = (r["access_token"] as? String)
+            ?? ((r["data"] as? [String: Any])?["access_token"] as? String)
+        guard let at, !at.isEmpty else {
             throw CloudError.parse("登录失败: \(r)")
         }
         accessToken = at
-        refreshToken = d["refresh_token"] as? String
+        refreshToken = (r["refresh_token"] as? String)
+            ?? ((r["data"] as? [String: Any])?["refresh_token"] as? String)
     }
 
     func signOut() {
