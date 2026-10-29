@@ -28,12 +28,16 @@ final class GuangyaProvider: CloudProvider {
         return "00-\(hex(32))-\(hex(16))-01"
     }
 
-    // 每次安装生成一个稳定设备 ID
+    // 每次安装生成一个稳定设备 ID（32 位小写十六进制，MD5 风格）
     private var deviceID: String {
         if let d = CredentialStore.get("guangya.deviceID") { return d }
-        let d = UUID().uuidString
+        let d = Self.randomHex(32)
         CredentialStore.set(d, for: "guangya.deviceID")
         return d
+    }
+
+    private static func randomHex(_ count: Int) -> String {
+        (0..<count).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
     }
 
     private var accessToken: String? {
@@ -56,11 +60,12 @@ final class GuangyaProvider: CloudProvider {
 
     private func accountHeaders(auth: Bool = false, captcha: String? = nil) -> [String: String] {
         var h = [
-            "Accept": "application/json, text/plain, */*",
+            "Accept": "*/*",
             "Content-Type": "application/json",
             "X-Device-Model": "chrome%2F147.0.0.0",
             "X-Device-Name": "PC-Chrome",
-            "X-Device-Sign": "wdi10." + deviceID,
+            // 官方签名格式：wdi10.<deviceId><32位随机hex>
+            "X-Device-Sign": "wdi10." + deviceID + Self.randomHex(32),
             "X-Net-Work-Type": "NONE",
             "X-OS-Version": "MacIntel",
             "X-Platform-Version": "1",
@@ -135,20 +140,24 @@ final class GuangyaProvider: CloudProvider {
 
     // MARK: - 短信登录（三步）
 
-    /// 第 1 步：发送短信验证码。返回 verification_id。
+    /// 第 1 步：安全验证初始化 + 发送短信验证码。返回 verification_id。
     func sendCode(phoneE164: String) async throws -> String {
-        // 先初始化 captcha token
-        let captcha = try? await post(
+        // 1) captcha init：换取安全验证令牌
+        let initBody: [String: Any] = [
+            "client_id": clientID,
+            "action": "POST:/v1/auth/verification",
+            "device_id": deviceID,
+            "meta": ["phone_number": phoneE164],
+        ]
+        let initResp = try await post(
             url: Self.accountBase.appendingPathComponent("/v1/shield/captcha/init"),
-            body: [
-                "client_id": clientID,
-                "action": "POST:/v1/auth/verification",
-                "device_id": deviceID,
-                "meta": ["phone_number": phoneE164],
-            ],
+            body: initBody,
             headers: accountHeaders())
-        let captchaToken = (captcha?["data"] as? [String: Any])?["captcha_token"] as? String
-
+        guard let d0 = initResp["data"] as? [String: Any],
+              let captchaToken = d0["captcha_token"] as? String, !captchaToken.isEmpty else {
+            throw CloudError.parse("安全验证初始化失败：\(initResp)")
+        }
+        // 2) 发送验证码（带 x-captcha-token）
         let r = try await post(
             url: Self.accountBase.appendingPathComponent("/v1/auth/verification"),
             body: ["phone_number": phoneE164, "target": "ANY", "client_id": clientID],
@@ -204,7 +213,7 @@ final class GuangyaProvider: CloudProvider {
         let r = try await post(
             url: Self.accountBase.appendingPathComponent("/v1/auth/token"),
             body: ["client_id": clientID, "grant_type": "refresh_token", "refresh_token": rt],
-            headers: accountHeaders())
+            headers: accountHeaders(auth: false).merging(["X-Action": "401"]) { a, _ in a })
         if let err = r["error"] as? String {
             throw CloudError.auth("token 刷新失败: \(err) \(r["error_description"] ?? "")")
         }
