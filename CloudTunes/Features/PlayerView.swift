@@ -53,28 +53,36 @@ struct PlayerView: View {
     }
 
     // MARK: 背景
+    // 注意：scaledToFill 的图片会把 ZStack 撑到屏幕高度那么宽，导致整个界面错位，
+    // 所以必须用 Color.overlay 承载并 clipped，保证背景视图的布局尺寸就是屏幕大小。
 
     private var background: some View {
         ZStack {
-            Color.black
-            if let artwork {
-                Image(uiImage: artwork)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 55)
-                    .opacity(0.75)
-                    .ignoresSafeArea()
-            } else {
-                LinearGradient(colors: [Color(red: 0.28, green: 0.20, blue: 0.32),
-                                        Color(red: 0.10, green: 0.10, blue: 0.14)],
-                               startPoint: .top, endPoint: .bottom)
-                    .ignoresSafeArea()
-            }
+            backgroundColorView
             LinearGradient(colors: [Color.black.opacity(0.15), Color.black.opacity(0.62)],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
             Color.black.opacity(0.18).ignoresSafeArea()
         }
+    }
+
+    private var backgroundColorView: some View {
+        Color.black
+            .overlay {
+                if let artwork {
+                    Image(uiImage: artwork)
+                        .resizable()
+                        .scaledToFill()
+                        .blur(radius: 55)
+                        .opacity(0.75)
+                } else {
+                    LinearGradient(colors: [Color(red: 0.28, green: 0.20, blue: 0.32),
+                                            Color(red: 0.10, green: 0.10, blue: 0.14)],
+                                   startPoint: .top, endPoint: .bottom)
+                }
+            }
+            .clipped()
+            .ignoresSafeArea()
     }
 
     // MARK: 顶栏

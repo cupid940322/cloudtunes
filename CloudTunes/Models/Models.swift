@@ -15,6 +15,15 @@ enum CloudKind: String, Codable, CaseIterable, Identifiable {
         case .quark: return "cube.fill"
         }
     }
+
+    /// 官方品牌图标（Assets.xcassets 里的 imageset）
+    var brandIconName: String {
+        switch self {
+        case .guangya: return "BrandGuangya"
+        case .baidu: return "BrandBaidu"
+        case .quark: return "BrandQuark"
+        }
+    }
 }
 
 /// 云端文件/目录条目

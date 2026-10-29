@@ -6,14 +6,25 @@ struct ProviderRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(color.opacity(0.15))
-                    .frame(width: 38, height: 38)
-                Image(systemName: kind.icon)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(color)
+            Group {
+                if let ui = UIImage(named: kind.brandIconName) {
+                    Image(uiImage: ui).resizable().scaledToFill()
+                } else {
+                    ZStack {
+                        color.opacity(0.15)
+                        Image(systemName: kind.icon)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(color)
+                    }
+                }
             }
+            .frame(width: 38, height: 38)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(Theme.hairline, lineWidth: 0.5)
+            )
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(kind.rawValue).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                 let p = ProviderRegistry.provider(kind: kind)

@@ -125,16 +125,19 @@ struct HomeTabView: View {
                 }
                 .padding(14)
                 .background {
-                    ZStack {
-                        LinearGradient(colors: [Color(red: 0.32, green: 0.26, blue: 0.42),
-                                                Color(red: 0.20, green: 0.20, blue: 0.30)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing)
-                        if let img = ArtworkCache.shared.image(named: item.track.artworkFile, target: 300) {
-                            Image(uiImage: img).resizable().scaledToFill()
-                                .blur(radius: 40).opacity(0.55)
+                    LinearGradient(colors: [Color(red: 0.32, green: 0.26, blue: 0.42),
+                                            Color(red: 0.20, green: 0.20, blue: 0.30)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                        .overlay {
+                            if let img = ArtworkCache.shared.image(named: item.track.artworkFile, target: 300) {
+                                Image(uiImage: img)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .blur(radius: 40)
+                                    .opacity(0.55)
+                            }
                         }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
                 }
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
@@ -440,7 +443,7 @@ struct LibraryDetailView: View {
     }
 
     private func songList(_ lib: MusicLibrary) -> some View {
-        VStack(spacing: 0) {
+        LazyVStack(spacing: 0) {
             ForEach(lib.tracks.indices, id: \.self) { idx in
                             let t = lib.tracks[idx]
                 SongRow(track: t, library: lib) {
@@ -709,7 +712,7 @@ struct AlbumDetailView: View {
                 .padding(.horizontal, Theme.pagePadding)
 
                 if let lib, let album {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(album.tracks.indices, id: \.self) { idx in
                             let t = album.tracks[idx]
                             SongRow(track: t, library: lib) { play(startAt: t.id) }
@@ -778,7 +781,7 @@ struct ArtistDetailView: View {
                 .padding(.horizontal, Theme.pagePadding)
 
                 if let lib, let artist {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(artist.tracks.indices, id: \.self) { idx in
                             let t = artist.tracks[idx]
                             SongRow(track: t, library: lib) { play(startAt: t.id) }

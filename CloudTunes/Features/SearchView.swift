@@ -125,7 +125,7 @@ struct SearchView: View {
     private var songSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "歌曲", subtitle: "\(results.count) 个结果")
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 ForEach(results.indices, id: \.self) { idx in
                             let item = results[idx]
                     SongRow(track: item.track, library: item.library) {

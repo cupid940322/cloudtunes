@@ -36,6 +36,22 @@ final class LibraryStore: ObservableObject {
         try? data.write(to: storageURL)
     }
 
+    /// 刮削过程中用：整库 JSON 可能有几 MB，主线程编码写盘会把 UI 卡死，
+    /// 所以拷贝一份数据丢到后台线程编码，且最多每 3 秒落一次盘。
+    private var lastDeferredSaveAt = Date.distantPast
+
+    private func saveDeferred() {
+        guard Date().timeIntervalSince(lastDeferredSaveAt) > 3 else { return }
+        lastDeferredSaveAt = Date()
+        let libs = libraries
+        let url = storageURL
+        Task.detached(priority: .utility) {
+            if let data = try? JSONEncoder().encode(libs) {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
     private func loadPrefs() {
         let defaults = UserDefaults.standard
         if let favs = defaults.array(forKey: favoritesKey) as? [String] {
@@ -366,22 +382,26 @@ final class LibraryStore: ObservableObject {
                 return collected
             }
 
-            for item in results {
-                if let meta = item.result {
-                    updateTrack(libraryID: libraryID, trackID: item.trackID) { t in
-                        if let v = meta.title, !v.isEmpty { t.title = v }
-                        if let v = meta.artist, !v.isEmpty { t.artist = v }
-                        if let v = meta.album, !v.isEmpty { t.album = v }
-                        if let v = meta.duration { t.duration = v }
-                        if let v = meta.artworkFile { t.artworkFile = v }
-                        if let v = meta.neteaseID { t.neteaseID = v }
-                        if meta.matched { t.confidence = meta.confidence }
-                        t.metaSource = meta.matched ? "online" : "filename"
-                        t.scraped = true
+            // 整批结果一次性写回，只触发一次 UI 刷新（逐首 update 会把大库的列表卡死）
+            if let li = libraries.firstIndex(where: { $0.id == libraryID }) {
+                var tracks = libraries[li].tracks
+                for item in results {
+                    guard let ti = tracks.firstIndex(where: { $0.id == item.trackID }) else { continue }
+                    if let meta = item.result {
+                        if let v = meta.title, !v.isEmpty { tracks[ti].title = v }
+                        if let v = meta.artist, !v.isEmpty { tracks[ti].artist = v }
+                        if let v = meta.album, !v.isEmpty { tracks[ti].album = v }
+                        if let v = meta.duration { tracks[ti].duration = v }
+                        if let v = meta.artworkFile { tracks[ti].artworkFile = v }
+                        if let v = meta.neteaseID { tracks[ti].neteaseID = v }
+                        if meta.matched { tracks[ti].confidence = meta.confidence }
+                        tracks[ti].metaSource = meta.matched ? "online" : "filename"
+                        tracks[ti].scraped = true
+                    } else {
+                        tracks[ti].scraped = true
                     }
-                } else {
-                    updateTrack(libraryID: libraryID, trackID: item.trackID) { $0.scraped = true }
                 }
+                libraries[li].tracks = tracks
             }
 
             done += results.count
@@ -389,7 +409,7 @@ final class LibraryStore: ObservableObject {
             if let total = progress[libraryID]?.totalToScrape {
                 progress[libraryID]?.phase = "刮削 \(done)/\(total)"
             }
-            save()
+            saveDeferred()
             cursor += batchSize
         }
         save()
