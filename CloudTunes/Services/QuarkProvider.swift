@@ -1,27 +1,39 @@
 import Foundation
 
 /// 夸克网盘 Provider —— ⚠️ 实验性。
-/// 夸克官方未开放 API，此实现基于社区逆向的 Web 端接口（drive-pc.quark.cn），
+/// 夸克官方未开放 API，此实现基于社区逆向的 Web 端接口（对齐 OpenList/alist 的 quark_uc 驱动），
 /// 需要用户从网页版 F12 复制登录 Cookie。接口随时可能失效或触发风控，仅限自用。
 ///
-/// 播放要点（踩坑记录）：
-/// 1. `/1/clouddrive/file/download` 返回的直链**必须**带 Cookie + Referer 去请求，
-///    否则 CDN 直接 302 到登录页 / 返回 403，AVPlayer 表现为「点了没反应」。
-/// 2. 夸克对网页端非会员有单文件 50MB 下载限制（code=23018），换客户端 UA 才能拿到可用直链，
-///    所以这里优先用客户端 UA 取直链，失败再退回网页 UA。
-/// 3. 直链有时效（几分钟）且绑定 IP，必须每次播放前重新获取，不能缓存。
+/// 播放要点（踩坑记录，缺一个都可能 403）：
+/// 1. **__puus Cookie 会话刷新（最关键）**：夸克每次 API 响应都会 Set-Cookie 一个新的
+///    `__puus`，下载直链只认**最新**的那个。把用户粘贴的 Cookie 存死不更新，
+///    过一会儿直链就 403——这正是「列目录正常但播放/缓存都失败」的典型原因。
+/// 2. 直链请求必须带 Cookie + Referer + 客户端 UA 三件套，缺 Referer 会被 302 到登录页。
+/// 3. 客户端 UA（quark-cloud-drive/…Electron/…）可绕过非会员单文件 50MB 下载限制（23018）。
+/// 4. 直链有时效（几分钟）且绑定 IP，必须每次播放前重新获取，不能缓存。
 final class QuarkProvider: CloudProvider {
     let kind: CloudKind = .quark
 
-    // MARK: - 常量
+    // MARK: - 常量（对齐 OpenList quark_uc 驱动）
 
-    private static let apiHost = "https://drive-pc.quark.cn"
+    /// API 基址：官方网页端域名在前，社区常用域名兜底
+    private static let apiBases = [
+        "https://drive.quark.cn/1/clouddrive",
+        "https://drive-pc.quark.cn/1/clouddrive",
+    ]
+    /// 客户端 UA（绕过非会员 50MB 限制）
+    private static let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
+    private static let referer = "https://pan.quark.cn"
 
-    /// 网页版 UA（列目录）
-    private static let webUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-    /// 客户端 UA：绕过非会员 50MB 限制的关键
-    private static let clientUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 Electron/18.3.5.12 Safari/537.36 Channel/pckk_other_ch"
-    private static let referer = "https://pan.quark.cn/"
+    /// 独立会话：关闭系统 Cookie 自动管理，请求头完全由我们自己控制
+    /// （否则 HTTPCookieStorage 里的旧 Cookie 可能覆盖/混入手动 Cookie 头）
+    private static let session: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
+        cfg.timeoutIntervalForRequest = 20
+        return URLSession(configuration: cfg)
+    }()
 
     // MARK: - 凭证
 
@@ -50,14 +62,54 @@ final class QuarkProvider: CloudProvider {
         return s.trimmingCharacters(in: .whitespaces)
     }
 
+    // MARK: - __puus 会话刷新（OpenList 同款机制）
+
+    /// 每次 API 响应后调用：响应里的 Set-Cookie 若带新的 __puus/__pus，
+    /// 立刻更新到本地存储。下载直链只认最新 __puus。
+    private func refreshCookie(from response: HTTPURLResponse) {
+        let setCookies = response.allHeaderFields
+            .filter { ($0.key as String).caseInsensitiveCompare("set-cookie") == .orderedSame }
+            .values
+            .joined(separator: ", ")
+        guard !setCookies.isEmpty else { return }
+        var updated = cookie
+        var changed = false
+        for name in ["__puus", "__pus"] {
+            if let v = Self.cookieValue(named: name, in: setCookies) {
+                let next = Self.setCookieValue(updated, name: name, value: v)
+                if next != updated { updated = next; changed = true }
+            }
+        }
+        if changed {
+            CredentialStore.set(updated, for: "quark.cookie")
+        }
+    }
+
+    static func cookieValue(named name: String, in text: String) -> String? {
+        guard let r = text.range(of: "\(NSRegularExpression.escapedPattern(for: name))=([^;,\\s]+)",
+                                 options: .regularExpression) else { return nil }
+        let pair = String(text[r])
+        guard let eq = pair.firstIndex(of: "=") else { return nil }
+        let v = String(pair[pair.index(after: eq)...])
+        return v.isEmpty ? nil : v
+    }
+
+    static func setCookieValue(_ cookie: String, name: String, value: String) -> String {
+        let pattern = "(?:^|;\\s*)\(NSRegularExpression.escapedPattern(for: name))=[^;]*"
+        if let r = cookie.range(of: pattern, options: .regularExpression) {
+            return cookie.replacingCharacters(in: r, with: "\(name)=\(value)")
+        }
+        return cookie.isEmpty ? "\(name)=\(value)" : "\(cookie); \(name)=\(value)"
+    }
+
     // MARK: - 请求
 
-    private func makeRequest(_ path: String,
-                             method: String = "GET",
-                             query: [String: String] = [:],
-                             body: [String: Any]? = nil,
-                             userAgent: String = QuarkProvider.webUA) throws -> URLRequest {
-        var comps = URLComponents(string: Self.apiHost + path)!
+    private func makeRequest(base: String,
+                             path: String,
+                             method: String,
+                             query: [String: String],
+                             body: [String: Any]?) throws -> URLRequest {
+        var comps = URLComponents(string: base + path)!
         var items = [URLQueryItem(name: "pr", value: "ucpro"), URLQueryItem(name: "fr", value: "pc")]
         items += query.map { URLQueryItem(name: $0.key, value: $0.value) }
         comps.queryItems = items
@@ -65,13 +117,11 @@ final class QuarkProvider: CloudProvider {
         req.httpMethod = method
         req.timeoutInterval = 20
         req.setValue(cookie, forHTTPHeaderField: "Cookie")
-        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue(Self.ua, forHTTPHeaderField: "User-Agent")
         req.setValue(Self.referer, forHTTPHeaderField: "Referer")
-        req.setValue("https://pan.quark.cn", forHTTPHeaderField: "Origin")
         req.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
         if let body {
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
         return req
@@ -81,22 +131,44 @@ final class QuarkProvider: CloudProvider {
     private func call(_ path: String,
                       method: String = "GET",
                       query: [String: String] = [:],
-                      body: [String: Any]? = nil,
-                      userAgent: String = QuarkProvider.webUA) async throws -> [String: Any] {
-        let req = try makeRequest(path, method: method, query: query, body: body, userAgent: userAgent)
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw CloudError.network("无响应") }
-        guard (200..<300).contains(http.statusCode) else {
-            throw CloudError.network("HTTP \(http.statusCode) \(String(data: data.prefix(120), encoding: .utf8) ?? "")")
+                      body: [String: Any]? = nil) async throws -> [String: Any] {
+        var lastError: Error = CloudError.network("未发送请求")
+        // 传输层失败 / HTTP >= 400 时换备用域名再试一次；业务错误（如 23018）不重试
+        for base in Self.apiBases {
+            do {
+                let req = try makeRequest(base: base, path: path, method: method, query: query, body: body)
+                let (data, resp) = try await Self.session.data(for: req)
+                guard let http = resp as? HTTPURLResponse else { throw CloudError.network("无响应") }
+                refreshCookie(from: http)
+                guard (200..<300).contains(http.statusCode) else {
+                    throw CloudError.network("HTTP \(http.statusCode) \(String(data: data.prefix(160), encoding: .utf8) ?? "")")
+                }
+                guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw CloudError.parse("响应非 JSON")
+                }
+                let status = (obj["status"] as? Int) ?? 200
+                if status != 200 {
+                    throw CloudError.network(Self.describe(obj))
+                }
+                return obj
+            } catch {
+                lastError = error
+                // 业务层错误（夸克返回的 status/message）换域名也没用，直接抛
+                if let cloud = error as? CloudError {
+                    switch cloud {
+                    case .network(let m) where m.hasPrefix("HTTP 5") || m.hasPrefix("HTTP 4"):
+                        continue
+                    case .parse:
+                        continue
+                    default:
+                        throw error
+                    }
+                } else {
+                    continue
+                }
+            }
         }
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CloudError.parse("响应非 JSON")
-        }
-        let status = (obj["status"] as? Int) ?? 200
-        if status != 200 {
-            throw CloudError.network(Self.describe(obj))
-        }
-        return obj
+        throw lastError
     }
 
     /// 把夸克的错误码翻译成人话（用户看得懂才知道该怎么办）
@@ -109,7 +181,7 @@ final class QuarkProvider: CloudProvider {
         case 31001, 31000, 31002:
             hint = " → Cookie 已失效，请重新从网页版复制完整 Cookie"
         case 23018:
-            hint = " → 非会员单文件 50MB 下载限制，换客户端 UA 或改用会员账号"
+            hint = " → 非会员单文件 50MB 下载限制"
         case 41004, 41006:
             hint = " → 文件不存在或已被删除"
         default:
@@ -127,13 +199,14 @@ final class QuarkProvider: CloudProvider {
         var page = 1
         var total = Int.max
         while page <= 20 && result.count < total {
-            let r = try await call("/1/clouddrive/file/sort", query: [
+            let r = try await call("/file/sort", query: [
                 "pdir_fid": pdir,
                 "_page": String(page),
                 "_size": "100",
-                "fetch_total": "1",
-                "sort_field": "file_type",
-                "sort_order": "asc",
+                "_fetch_total": "1",
+                "fetch_all_file": "1",
+                "fetch_risk_file_name": "1",
+                "_sort": "file_type:asc,file_name:asc",
             ])
             guard let data = r["data"] as? [String: Any] else { break }
             let list = (data["list"] as? [[String: Any]]) ?? []
@@ -167,36 +240,29 @@ final class QuarkProvider: CloudProvider {
         var candidates: [String] = []
         var lastMessage = "接口未返回 download_url"
 
-        // 先客户端 UA，再网页 UA
-        for ua in [Self.clientUA, Self.webUA] {
-            do {
-                let r = try await call("/1/clouddrive/file/download",
-                                       method: "POST",
-                                       body: ["fids": [file.id]],
-                                       userAgent: ua)
-                let urls = Self.extractURLs(r)
-                if !urls.isEmpty { candidates = urls; break }
-                lastMessage = "接口未返回 download_url（返回结构：\(Self.brief(r))）"
-            } catch {
-                lastMessage = error.localizedDescription
-            }
+        let r = try await call("/file/download", method: "POST", body: ["fids": [file.id]])
+        let urls = Self.extractURLs(r)
+        if !urls.isEmpty {
+            candidates = urls
+        } else {
+            lastMessage = "接口未返回 download_url（返回结构：\(Self.brief(r))）"
         }
 
         guard let first = candidates.first, let url = Self.makeURL(first) else {
             throw CloudError.parse("取夸克直链失败：\(lastMessage)")
         }
 
+        // 注意：这里读的是「刚刚被 Set-Cookie 刷新过」的 Cookie，__puus 是新的
         return (url, Self.mediaHeaders(cookie: cookie))
     }
 
-    /// 直链请求头：三者缺一不可，缺 Referer 会被 302 到登录页
+    /// 直链请求头：三者缺一不可，缺 Referer 会被 302 到登录页，__puus 过期会 403
     private static func mediaHeaders(cookie: String) -> [String: String] {
         [
             "Cookie": cookie,
-            "User-Agent": clientUA,
+            "User-Agent": ua,
             "Referer": referer,
             "Accept": "*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
         ]
     }
 
@@ -246,7 +312,7 @@ final class QuarkProvider: CloudProvider {
 
     func selfTest() async -> String {
         var out: [String] = []
-        out.append("Cookie 长度：\(cookie.count)")
+        out.append("Cookie 长度：\(cookie.count)，含 __puus：\(cookie.contains("__puus") ? "是" : "否")")
         guard !cookie.isEmpty else {
             out.append("未导入 Cookie")
             return out.joined(separator: "\n")
@@ -257,6 +323,7 @@ final class QuarkProvider: CloudProvider {
         } catch {
             out.append("列目录失败：\(error.localizedDescription)")
         }
+        out.append("Cookie 已刷新：\(cookie.contains("__puus") ? "是" : "否")（长度 \(cookie.count)）")
         guard let audio = await firstAudio(folderID: "0", depth: 0) else {
             out.append("根目录两层内没找到音频文件")
             return out.joined(separator: "\n")
@@ -304,7 +371,10 @@ final class QuarkProbe: NSObject, URLSessionDataDelegate {
     private func start(_ req: URLRequest) async -> String {
         await withCheckedContinuation { (c: CheckedContinuation<String, Never>) in
             continuation = c
-            let s = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.httpCookieStorage = nil
+            cfg.httpShouldSetCookies = false
+            let s = URLSession(configuration: cfg, delegate: self, delegateQueue: nil)
             session = s
             s.dataTask(with: req).resume()
         }

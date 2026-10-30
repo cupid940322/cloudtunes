@@ -8,6 +8,16 @@ import Foundation
 enum StreamCache {
     static let maxBytes: Int64 = 800 * 1024 * 1024
 
+    /// 独立会话：关闭系统 Cookie 自动管理，避免 HTTPCookieStorage 里的旧 Cookie
+    /// 干扰手动设置的 Cookie 头（夸克直链对 Cookie 极敏感）
+    static let session: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.httpCookieStorage = nil
+        cfg.httpShouldSetCookies = false
+        cfg.timeoutIntervalForRequest = 60
+        return URLSession(configuration: cfg)
+    }()
+
     static var directory: URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("StreamCache", isDirectory: true)
@@ -43,7 +53,7 @@ enum StreamCache {
         req.timeoutInterval = 30
         headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
 
-        let (tmp, resp) = try await URLSession.shared.download(for: req)
+        let (tmp, resp) = try await session.download(for: req)
         guard let http = resp as? HTTPURLResponse else { throw CloudError.network("无响应") }
         guard (200..<300).contains(http.statusCode) else {
             throw CloudError.network("直链返回 HTTP \(http.statusCode)（Cookie 可能已过期，或该文件需要会员权限）")
