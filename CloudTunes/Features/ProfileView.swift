@@ -173,7 +173,7 @@ struct ProfileView: View {
                 NavigationLink {
                     CacheManageView()
                 } label: {
-                    rowLabel("封面缓存", "photo.on.rectangle")
+                    rowLabel("缓存管理", "internaldrive")
                 }
                 .buttonStyle(.plain)
             }
@@ -202,7 +202,7 @@ struct ProfileView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "关于")
             VStack(alignment: .leading, spacing: 6) {
-                Text("汤圆云音盒 1.1").font(.subheadline.weight(.medium))
+                Text("汤圆云音盒 1.2").font(.subheadline.weight(.medium))
                 Text("直连光鸭 / 百度 / 夸克网盘，递归扫描音乐文件，通过网易云音乐与 QQ 音乐匹配封面、专辑与歌词。免费签名 7 天有效，到期用 Sideloadly 覆盖安装即可。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -216,10 +216,12 @@ struct ProfileView: View {
     }
 }
 
-/// 封面缓存管理
+/// 封面 / 播放缓存管理
 struct CacheManageView: View {
     @State private var sizeText = "计算中…"
     @State private var count = 0
+    @State private var streamText = "计算中…"
+    @State private var streamCount = 0
 
     var body: some View {
         ScrollView {
@@ -246,11 +248,36 @@ struct CacheManageView: View {
 
                 Text("清空后重新进入音乐库会重新下载封面。")
                     .font(.caption).foregroundStyle(.tertiary)
+
+                Divider().padding(.vertical, 4)
+
+                VStack(spacing: 6) {
+                    Text(streamText).font(.title3.weight(.bold))
+                    Text("\(streamCount) 个音频（直链播放失败时的本地兜底缓存）")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 22)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+
+                Button(role: .destructive) {
+                    StreamCache.clear()
+                    refresh()
+                } label: {
+                    Text("清空播放缓存")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
             }
             .padding(Theme.pagePadding)
         }
         .background(Theme.background)
-        .navigationTitle("封面缓存")
+        .navigationTitle("缓存管理")
         .navigationBarTitleDisplayMode(.inline)
         .task { refresh() }
     }
@@ -265,6 +292,9 @@ struct CacheManageView: View {
         }
         count = files.count
         sizeText = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+
+        streamCount = StreamCache.count
+        streamText = ByteCountFormatter.string(fromByteCount: StreamCache.totalSize, countStyle: .file)
     }
 
     private func clearCache() {

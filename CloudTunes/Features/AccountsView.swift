@@ -188,6 +188,20 @@ struct QuarkLoginView: View {
     private let provider = ProviderRegistry.quark
     @State private var signedIn = ProviderRegistry.quark.isSignedIn
     @State private var cookie = ""
+    @State private var testing = false
+    @State private var testResult: String?
+
+    private func runTest() {
+        testing = true
+        testResult = nil
+        Task {
+            let r = await provider.selfTest()
+            await MainActor.run {
+                testResult = r
+                testing = false
+            }
+        }
+    }
 
     var body: some View {
         Form {
@@ -201,19 +215,40 @@ struct QuarkLoginView: View {
                     }
                 }
                 NavigationLink("浏览文件 →") { FileBrowserView(kind: .quark) }
+
+                Section("播放异常时先自检") {
+                    Button(testing ? "检测中…" : "自检：列目录 + 取直链") { runTest() }
+                        .disabled(testing)
+                    if let testResult {
+                        Text(testResult)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                    } else {
+                        Text("会试列一次根目录，并给第一首歌取一次直链、探测 HTTP 状态。结果发我就能定位问题。")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                }
             } else {
-                Section("Cookie（网页版 pan.quark.cn → F12 → Network → 任意请求的 Cookie 全量复制）") {
-                    TextEditor(text: $cookie).frame(minHeight: 120)
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("怎么拿 Cookie").font(.footnote.weight(.semibold))
+                        Text("1. 手机/电脑浏览器打开 pan.quark.cn 并登录\n2. 电脑按 F12 → Network（网络）\n3. 刷新页面，点列表里任意一条 sort 请求\n4. 在 Request Headers 里找到 Cookie，整段复制粘贴到下面")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    TextEditor(text: $cookie).frame(minHeight: 140)
                         .font(.system(size: 12, design: .monospaced))
                     Button("导入并登录") {
-                        provider.setCookie(cookie.trimmingCharacters(in: .whitespacesAndNewlines))
-                        signedIn = !cookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        let value = cookie.trimmingCharacters(in: .whitespacesAndNewlines)
+                        provider.setCookie(value)
+                        signedIn = !value.isEmpty
                         AuthState.shared.bump()
                     }
                 }
             }
             Section {
-                Text("⚠️ 夸克官方未开放 API，本功能基于社区逆向接口，可能随时失效或触发账号风控，请自行斟酌。")
+                Text("⚠️ 夸克官方未开放 API，本功能基于社区逆向接口，可能随时失效或触发账号风控，请自行斟酌。Cookie 等同于账号密码，本机保存在 App 沙盒内，不会上传。")
                     .font(.footnote).foregroundColor(.orange)
             }
         }

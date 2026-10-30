@@ -30,16 +30,24 @@ final class PlayerManager: NSObject, ObservableObject {
     @Published var nowPlayingTitle: String = ""
     @Published var repeatMode: RepeatMode = .off
     @Published var isShuffled = false
+    /// 播放状态提示（缓存中 / 直链被拒绝等），播放页顶部横幅展示
+    @Published var playNote: String = ""
 
     private var player = AVPlayer()
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
-    /// 当前曲目的直链请求头（百度需要 UA）
+    /// 当前曲目的直链请求头（百度/夸克需要 UA + Cookie + Referer）
     private var currentHeaders: [String: String] = [:]
     /// 随机播放前的原始顺序
     private var originalQueue: [Track] = []
     /// 取直链的任务（新请求会取消旧请求，避免旧结果覆盖新歌）
     private var loadTask: Task<Void, Never>?
+    /// 直链播放失败 → 本地缓存兜底
+    private var fallbackTask: Task<Void, Never>?
+    @Published private(set) var isFallingBack = false
+    /// 9 秒还没出声就直接走缓存兜底
+    private var watchdogTask: Task<Void, Never>?
+    private var itemStatusObservation: NSKeyValueObservation?
     /// 锁屏进度每秒同步用
     private var lastSyncedSecond: Int = -1
     /// 锁屏封面缓存（避免每秒读盘）
@@ -227,10 +235,21 @@ final class PlayerManager: NSObject, ObservableObject {
         previous(provider: p)
     }
 
+    /// 重试当前曲目（重新取直链）
+    func retryCurrent() {
+        guard let t = currentTrack,
+              let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
+        playAt(currentIndex, provider: p)
+    }
+
     func playAt(_ index: Int, provider: CloudProvider) {
         guard queue.indices.contains(index) else { return }
         // 取消还在路上的旧请求，避免快速切歌时旧结果把新歌顶掉
         loadTask?.cancel()
+        fallbackTask?.cancel()
+        watchdogTask?.cancel()
+        itemStatusObservation = nil
+        isFallingBack = false
         currentIndex = index
         let track = queue[index]
         nowPlayingTitle = track.title
@@ -239,6 +258,7 @@ final class PlayerManager: NSObject, ObservableObject {
         lastSyncedSecond = -1
         npArtworkKey = nil
         lyricLines = []
+        playNote = ""
         lyricSourceNote = "歌词加载中…"
         updateNowPlaying()
 
@@ -249,16 +269,7 @@ final class PlayerManager: NSObject, ObservableObject {
                 await MainActor.run {
                     // 在取直链期间用户又切了别的歌
                     guard self.currentIndex == index, !Task.isCancelled else { return }
-                    self.currentHeaders = link.headers
-                    let asset = AVURLAsset(url: link.url, options: [
-                        "AVURLAssetHTTPHeaderFieldsKey": link.headers,
-                    ])
-                    let item = AVPlayerItem(asset: asset)
-                    self.observeEnd(of: item)
-                    self.player.replaceCurrentItem(with: item)
-                    self.player.play()
-                    self.isPlaying = true
-                    self.updateNowPlaying()
+                    self.startStreaming(track: track, index: index, link: link)
                     LibraryStore.shared.markPlayed(track.id)
                 }
                 try Task.checkCancellation()
@@ -271,7 +282,84 @@ final class PlayerManager: NSObject, ObservableObject {
                     // 明确暂停，避免旧歌继续响造成「按了没反应」的错觉
                     self.player.pause()
                     self.isPlaying = false
+                    self.playNote = "播放失败：\(error.localizedDescription)"
                     self.lyricSourceNote = "播放失败：\(error.localizedDescription)，请重试或重新登录网盘"
+                    self.updateNowPlaying()
+                }
+            }
+        }
+    }
+
+    /// 用直链起播，并挂上「失败 / 久不出声」监听，随时准备本地缓存兜底
+    private func startStreaming(track: Track, index: Int, link: (url: URL, headers: [String: String])) {
+        currentHeaders = link.headers
+        let asset = AVURLAsset(url: link.url, options: [
+            "AVURLAssetHTTPHeaderFieldsKey": link.headers,
+        ])
+        let item = AVPlayerItem(asset: asset)
+        observeEnd(of: item)
+        player.replaceCurrentItem(with: item)
+        player.play()
+        isPlaying = true
+        updateNowPlaying()
+
+        // AVPlayer 对请求头极敏感（夸克少一个 Referer 就 403），失败就直接转本地缓存
+        itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            let reason = item.error?.localizedDescription ?? "无法读取音频流"
+            Task { @MainActor in
+                self?.fallbackToCache(track: track, index: index, link: link, reason: reason)
+            }
+        }
+
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 9_000_000_000)
+            await MainActor.run {
+                guard let self, self.currentIndex == index, self.isPlaying, !self.isFallingBack else { return }
+                guard self.currentTime < 0.5 else { return }
+                self.fallbackToCache(track: track, index: index, link: link, reason: "连接超时")
+            }
+        }
+    }
+
+    /// 直链被拒绝 → 用带完整请求头的 URLSession 把文件拉到本地缓存再播
+    private func fallbackToCache(track: Track,
+                                 index: Int,
+                                 link: (url: URL, headers: [String: String]),
+                                 reason: String) {
+        guard currentIndex == index, !isFallingBack else { return }
+        isFallingBack = true
+        watchdogTask?.cancel()
+        playNote = "直链无法播放（\(reason)），正在缓存到本地…"
+        fallbackTask?.cancel()
+        fallbackTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let local = try await StreamCache.localCopy(of: link.url,
+                                                            headers: link.headers,
+                                                            key: track.id,
+                                                            source: track.file.name)
+                await MainActor.run {
+                    guard self.currentIndex == index else { return }
+                    self.isFallingBack = false
+                    self.playNote = "已缓存到本地播放（原直链被拒绝，若频繁出现请重新导入 Cookie）"
+                    let item = AVPlayerItem(url: local)
+                    self.observeEnd(of: item)
+                    self.player.replaceCurrentItem(with: item)
+                    self.player.play()
+                    self.isPlaying = true
+                    self.duration = 0
+                    self.updateNowPlaying()
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.currentIndex == index else { return }
+                    self.isFallingBack = false
+                    self.player.pause()
+                    self.isPlaying = false
+                    self.playNote = "播放失败：\(error.localizedDescription)"
+                    self.lyricSourceNote = "播放失败：\(error.localizedDescription)"
                     self.updateNowPlaying()
                 }
             }

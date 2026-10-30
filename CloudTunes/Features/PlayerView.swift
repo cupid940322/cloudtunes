@@ -23,6 +23,9 @@ struct PlayerView: View {
                 background
                 VStack(spacing: 0) {
                     topBar
+                    if !player.playNote.isEmpty {
+                        playNoteBanner
+                    }
                     Spacer(minLength: 8)
                     if showLyrics {
                         lyricPanel
@@ -116,10 +119,35 @@ struct PlayerView: View {
         }
     }
 
+    // MARK: 播放提示条（直链失败 / 缓存中）
+
+    private var playNoteBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: player.isFallingBack ? "arrow.down.circle" : "exclamationmark.triangle.fill")
+                .font(.caption)
+            Text(player.playNote)
+                .font(.caption2)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if !player.isFallingBack {
+                Button("重试") { player.retryCurrent() }
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.white.opacity(0.18), in: Capsule())
+            }
+        }
+        .foregroundStyle(.white.opacity(0.92))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.top, 8)
+    }
+
     // MARK: 封面
 
-    private func coverPanel(side: CGFloat) -> some View {
-        VStack {
+    private func coverPanel(side: CGFloat) -> some View {        VStack {
             Spacer(minLength: 0)
             CoverView(file: track?.artworkFile, size: side, corner: 22, showsShadow: true)
                 .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
