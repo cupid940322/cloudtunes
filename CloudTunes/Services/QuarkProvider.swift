@@ -67,10 +67,11 @@ final class QuarkProvider: CloudProvider {
     /// 每次 API 响应后调用：响应里的 Set-Cookie 若带新的 __puus/__pus，
     /// 立刻更新到本地存储。下载直链只认最新 __puus。
     private func refreshCookie(from response: HTTPURLResponse) {
-        let setCookies = response.allHeaderFields
-            .filter { ($0.key as String).caseInsensitiveCompare("set-cookie") == .orderedSame }
-            .values
-            .joined(separator: ", ")
+        let setCookies = response.allHeaderFields.compactMap { key, value -> String? in
+            guard let k = key as? String,
+                  k.caseInsensitiveCompare("set-cookie") == .orderedSame else { return nil }
+            return value as? String
+        }.joined(separator: ", ")
         guard !setCookies.isEmpty else { return }
         var updated = cookie
         var changed = false
