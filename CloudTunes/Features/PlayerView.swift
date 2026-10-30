@@ -99,11 +99,9 @@ struct PlayerView: View {
                     .background(.white.opacity(0.12), in: Circle())
             }
             Spacer()
-            VStack(spacing: 2) {
-                Text("正在播放").font(.caption2.weight(.semibold)).foregroundStyle(.white.opacity(0.65))
-                Text(track?.album ?? "汤圆云音盒")
-                    .font(.caption).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
-            }
+            Text("正在播放")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
             Spacer()
             Button {
                 showEdit = true
@@ -313,6 +311,10 @@ struct PlayerView: View {
 struct LyricScrollView: View {
     @ObservedObject private var player = PlayerManager.shared
     @State private var autoScroll = true
+    @State private var dragBaseIndex: Int? = nil
+    @State private var seekTargetIndex: Int? = nil
+    /// 拖动换算：一行歌词大约占的高度
+    private let rowHeight: CGFloat = 44
 
     var body: some View {
         Group {
@@ -366,6 +368,8 @@ struct LyricScrollView: View {
                 .padding(.vertical, 80)
             }
             .mask(fadeMask)
+            .simultaneousGesture(seekDrag)
+            .overlay { seekHint }
             .onChange(of: player.currentTime) { _ in
                 handleTick(proxy: proxy)
             }
@@ -380,6 +384,66 @@ struct LyricScrollView: View {
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
             .id(line.id)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard line.time >= 0 else { return }
+                player.seek(to: line.time)
+                autoScroll = true
+            }
+    }
+
+    /// 拖动歌词：松手后跳转到目标行
+    private var seekDrag: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { v in
+                if dragBaseIndex == nil {
+                    dragBaseIndex = activeIndex() ?? 0
+                    autoScroll = false
+                }
+                seekTargetIndex = clampTarget((dragBaseIndex ?? 0) + Int((-v.translation.height / rowHeight).rounded()))
+            }
+            .onEnded { v in
+                defer {
+                    dragBaseIndex = nil
+                    withAnimation(.easeInOut(duration: 0.2)) { seekTargetIndex = nil }
+                }
+                guard let base = dragBaseIndex else { return }
+                let delta = Int((-v.translation.height / rowHeight).rounded())
+                let target = clampTarget(base + delta)
+                guard abs(delta) >= 1, player.lyricLines.indices.contains(target) else {
+                    // 只是轻轻蹭了一下，2 秒后恢复跟随
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { autoScroll = true }
+                    return
+                }
+                let line = player.lyricLines[target]
+                guard line.time >= 0 else { return }
+                player.seek(to: line.time)
+                autoScroll = true
+            }
+    }
+
+    private func clampTarget(_ i: Int) -> Int {
+        max(0, min(player.lyricLines.count - 1, i))
+    }
+
+    private var seekHint: some View {
+        Group {
+            if let idx = seekTargetIndex, player.lyricLines.indices.contains(idx) {
+                let line = player.lyricLines[idx]
+                VStack(spacing: 4) {
+                    Text(line.text.isEmpty ? " " : line.text)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+                    Text("松开跳转到 \(line.time.formattedTime)")
+                        .font(.caption2)
+                        .foregroundStyle(Color.white.opacity(0.7))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
     }
 
     private var fadeMask: LinearGradient {

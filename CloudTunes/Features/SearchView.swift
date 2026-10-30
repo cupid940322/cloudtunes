@@ -26,30 +26,32 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 22) {
-                    searchField
-
-                    if query.isEmpty {
+            VStack(spacing: 0) {
+                searchField
+                    .padding(.top, 10)
+                    .padding(.bottom, 12)
+                ScrollView {
+                    VStack(spacing: 22) {
+                        if query.isEmpty {
                         browseShortcuts
                         if !store.recentTracks.isEmpty { recentSection }
                         if !store.favoriteTracks.isEmpty { favoriteSection }
-                    } else if results.isEmpty && matchedAlbums.isEmpty && matchedArtists.isEmpty {
-                        EmptyStateView(icon: "magnifyingglass",
-                                       title: "没有找到「\(query)」",
-                                       message: "试试搜索歌手名、歌曲名或专辑名")
-                    } else {
-                        if !matchedArtists.isEmpty { artistSection }
-                        if !matchedAlbums.isEmpty { albumSection }
-                        if !results.isEmpty { songSection }
+                        } else if results.isEmpty && matchedAlbums.isEmpty && matchedArtists.isEmpty {
+                            EmptyStateView(icon: "magnifyingglass",
+                                           title: "没有找到「\(query)」",
+                                           message: "试试搜索歌手名、歌曲名或专辑名")
+                        } else {
+                            if !matchedArtists.isEmpty { artistSection }
+                            if !matchedAlbums.isEmpty { albumSection }
+                            if !results.isEmpty { songSection }
+                        }
                     }
+                    .padding(.bottom, 140)
                 }
-                .padding(.top, 10)
-                .padding(.bottom, 140)
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.immediately)
             }
             .background(Theme.background)
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.immediately)
         }
     }
 

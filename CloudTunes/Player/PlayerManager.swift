@@ -38,6 +38,13 @@ final class PlayerManager: NSObject, ObservableObject {
     private var currentHeaders: [String: String] = [:]
     /// 随机播放前的原始顺序
     private var originalQueue: [Track] = []
+    /// 取直链的任务（新请求会取消旧请求，避免旧结果覆盖新歌）
+    private var loadTask: Task<Void, Never>?
+    /// 锁屏进度每秒同步用
+    private var lastSyncedSecond: Int = -1
+    /// 锁屏封面缓存（避免每秒读盘）
+    private var npArtworkKey: String?
+    private var npArtwork: MPMediaItemArtwork?
 
     // MARK: - 播放结束自动下一首（含后台/熄屏）
 
@@ -134,10 +141,16 @@ final class PlayerManager: NSObject, ObservableObject {
         if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        if let url = MetadataScraper.artworkURL(file: track.artworkFile),
-           let image = UIImage(contentsOfFile: url.path) {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        // 封面只在换歌时读一次盘
+        if npArtworkKey != track.id {
+            npArtworkKey = track.id
+            npArtwork = nil
+            if let url = MetadataScraper.artworkURL(file: track.artworkFile),
+               let image = UIImage(contentsOfFile: url.path) {
+                npArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            }
         }
+        if let npArtwork { info[MPMediaItemPropertyArtwork] = npArtwork }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
@@ -147,9 +160,22 @@ final class PlayerManager: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] time in
             guard let self else { return }
-            currentTime = time.seconds
-            let d = player.currentItem?.duration.seconds ?? 0
-            if d.isFinite { duration = d }
+            self.currentTime = time.seconds
+            let d = self.player.currentItem?.duration.seconds ?? 0
+            if d.isFinite, d > 0 {
+                let rounded = (d * 100).rounded() / 100
+                if abs(self.duration - rounded) > 0.05 {
+                    // 时长刚解析出来（之前是 0），立刻刷锁屏，否则锁屏没有总时长
+                    self.duration = rounded
+                    self.updateNowPlaying()
+                }
+            }
+            // 每秒同步一次锁屏的已播时间
+            let second = Int(time.seconds)
+            if second != self.lastSyncedSecond {
+                self.lastSyncedSecond = second
+                self.updateNowPlaying()
+            }
         }
     }
 
@@ -203,18 +229,26 @@ final class PlayerManager: NSObject, ObservableObject {
 
     func playAt(_ index: Int, provider: CloudProvider) {
         guard queue.indices.contains(index) else { return }
+        // 取消还在路上的旧请求，避免快速切歌时旧结果把新歌顶掉
+        loadTask?.cancel()
         currentIndex = index
         let track = queue[index]
         nowPlayingTitle = track.title
         currentTime = 0
         duration = 0
+        lastSyncedSecond = -1
+        npArtworkKey = nil
         lyricLines = []
         lyricSourceNote = "歌词加载中…"
+        updateNowPlaying()
 
-        Task {
+        loadTask = Task {
             do {
                 let link = try await provider.streamURL(file: track.file)
+                try Task.checkCancellation()
                 await MainActor.run {
+                    // 在取直链期间用户又切了别的歌
+                    guard self.currentIndex == index, !Task.isCancelled else { return }
                     self.currentHeaders = link.headers
                     let asset = AVURLAsset(url: link.url, options: [
                         "AVURLAssetHTTPHeaderFieldsKey": link.headers,
@@ -227,11 +261,18 @@ final class PlayerManager: NSObject, ObservableObject {
                     self.updateNowPlaying()
                     LibraryStore.shared.markPlayed(track.id)
                 }
+                try Task.checkCancellation()
                 await self.loadLyrics(for: track)
+            } catch is CancellationError {
+                return
             } catch {
                 await MainActor.run {
-                    self.lyricSourceNote = "播放失败：\(error.localizedDescription)"
+                    guard self.currentIndex == index else { return }
+                    // 明确暂停，避免旧歌继续响造成「按了没反应」的错觉
+                    self.player.pause()
                     self.isPlaying = false
+                    self.lyricSourceNote = "播放失败：\(error.localizedDescription)，请重试或重新登录网盘"
+                    self.updateNowPlaying()
                 }
             }
         }
@@ -257,8 +298,11 @@ final class PlayerManager: NSObject, ObservableObject {
     }
 
     func previous(provider: CloudProvider) {
-        guard currentIndex - 1 >= 0 else { return }
-        playAt(currentIndex - 1, provider: provider)
+        if currentIndex - 1 >= 0 {
+            playAt(currentIndex - 1, provider: provider)
+        } else if repeatMode == .all, !queue.isEmpty {
+            playAt(queue.count - 1, provider: provider)
+        }
     }
 
     func seek(to seconds: TimeInterval) {

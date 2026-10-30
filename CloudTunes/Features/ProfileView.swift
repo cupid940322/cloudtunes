@@ -14,17 +14,20 @@ struct ProfileView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    profileHeader
-                    statsRow
-                    providerSection
-                    browseSection
-                    dataSection
-                    aboutSection
+            VStack(spacing: 0) {
+                profileHeader
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+                ScrollView {
+                    VStack(spacing: 20) {
+                        statsRow
+                        providerSection
+                        browseSection
+                        dataSection
+                        aboutSection
+                    }
+                    .padding(.bottom, 140)
                 }
-                .padding(.top, 10)
-                .padding(.bottom, 140)
             }
             .background(Theme.background)
             .scrollIndicators(.hidden)

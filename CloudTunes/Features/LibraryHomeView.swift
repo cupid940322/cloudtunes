@@ -20,16 +20,20 @@ struct HomeTabView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    header
-                    continueCard
-                    librariesSection
-                    if !recentlyAdded.isEmpty { recentlyAddedSection }
-                    if !store.recentTracks.isEmpty { recentSection }
+            VStack(spacing: 0) {
+                header
+                    .padding(.top, 8)
+                    .padding(.bottom, 10)
+                ScrollView {
+                    VStack(spacing: 24) {
+                        continueCard
+                        librariesSection
+                        if !recentlyAdded.isEmpty { recentlyAddedSection }
+                        if !store.recentTracks.isEmpty { recentSection }
+                    }
+                    .padding(.top, 4)
+                    .padding(.bottom, 140)
                 }
-                .padding(.top, 8)
-                .padding(.bottom, 140)
             }
             .background(Theme.background)
             .scrollIndicators(.hidden)
@@ -324,27 +328,31 @@ struct LibraryDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                if let lib {
-                    header(lib)
-                    if let p = store.progress[libraryID] {
-                        progressCard(p)
+                    if let lib {
+                        header(lib)
+                        if let p = store.progress[libraryID] {
+                            progressCard(p)
+                        }
+                        switch tab {
+                        case 0: songList(lib)
+                        case 1: albumGrid(lib)
+                        default: artistList(lib)
+                        }
+                    } else {
+                        EmptyStateView(icon: "questionmark.folder", title: "音乐库不存在", message: "可能已被删除")
                     }
-                    SegmentedPills(selection: $tab, titles: ["歌曲", "专辑", "艺术家"])
-                        .padding(.horizontal, Theme.pagePadding)
-                    switch tab {
-                    case 0: songList(lib)
-                    case 1: albumGrid(lib)
-                    default: artistList(lib)
-                    }
-                } else {
-                    EmptyStateView(icon: "questionmark.folder", title: "音乐库不存在", message: "可能已被删除")
                 }
+                .padding(.top, 6)
+                .padding(.bottom, 140)
             }
-            .padding(.top, 6)
-            .padding(.bottom, 140)
-        }
-        .background(Theme.background)
-        .scrollIndicators(.hidden)
+            .background(Theme.background)
+            .scrollIndicators(.hidden)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                SegmentedPills(selection: $tab, titles: ["歌曲", "专辑", "艺术家"])
+                    .padding(.horizontal, Theme.pagePadding)
+                    .padding(.vertical, 8)
+                    .background(Theme.background)
+            }
         .navigationTitle(lib?.name ?? "音乐库")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
