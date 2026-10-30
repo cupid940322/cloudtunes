@@ -65,6 +65,7 @@ enum LyricsService {
         if let a = artist, !a.isEmpty { items.append(.init(name: "artist_name", value: a)) }
         comps.queryItems = items
         var req = URLRequest(url: comps.url!)
+        req.timeoutInterval = 6
         req.setValue("CloudTunes/0.1 (personal use)", forHTTPHeaderField: "User-Agent")
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return [] }

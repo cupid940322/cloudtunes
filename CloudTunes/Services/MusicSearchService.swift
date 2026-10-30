@@ -38,7 +38,7 @@ enum MusicSearchService {
         ]
         guard let url = comps.url else { return [] }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 15
+        req.timeoutInterval = 8
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
         req.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
@@ -70,7 +70,7 @@ enum MusicSearchService {
     static func neteaseDetail(id: Int) async -> SongInfo? {
         guard let url = URL(string: "https://music.163.com/api/song/detail?ids=[\(id)]") else { return nil }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 15
+        req.timeoutInterval = 8
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
         req.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
@@ -94,7 +94,7 @@ enum MusicSearchService {
     static func neteaseLyrics(id: Int) async -> String? {
         guard let url = URL(string: "https://music.163.com/api/song/lyric?id=\(id)&lv=1&kv=1&tv=-1") else { return nil }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 15
+        req.timeoutInterval = 8
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
         req.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
@@ -121,7 +121,7 @@ enum MusicSearchService {
         ]
         guard let url = comps.url else { return [] }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 15
+        req.timeoutInterval = 8
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
         req.setValue("https://y.qq.com/", forHTTPHeaderField: "Referer")
         guard let (data, _) = try? await URLSession.shared.data(for: req),

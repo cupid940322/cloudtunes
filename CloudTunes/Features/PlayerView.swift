@@ -634,7 +634,15 @@ struct LyricSearchSheet: View {
             player.lyricLines = parsed
         }
         player.lyricSourceNote = "歌词来源：LRCLIB（\(c.artistName)）"
+        cacheCurrentLyrics()
         dismiss()
+    }
+
+    /// 手动选中的歌词也存进缓存，下次切到这首歌直接命中
+    private func cacheCurrentLyrics() {
+        guard let track = player.currentTrack else { return }
+        let key = LyricsCache.key(title: track.title, artist: track.artist)
+        LyricsCache.store(player.lyricLines, note: player.lyricSourceNote, for: key)
     }
 
     private func applyNetease(_ s: MusicSearchService.SongInfo) {
@@ -646,6 +654,7 @@ struct LyricSearchSheet: View {
                     let parsed = LRCParser.parse(text)
                     player.lyricLines = parsed
                     player.lyricSourceNote = "歌词来源：网易云（\(s.artist ?? "")）"
+                    cacheCurrentLyrics()
                 } else {
                     message = "这首歌在网易云没有歌词"
                 }

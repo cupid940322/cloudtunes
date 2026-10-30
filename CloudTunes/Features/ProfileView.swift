@@ -202,7 +202,7 @@ struct ProfileView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "关于")
             VStack(alignment: .leading, spacing: 6) {
-                Text("汤圆云音盒 1.3").font(.subheadline.weight(.medium))
+                Text("汤圆云音盒 1.4").font(.subheadline.weight(.medium))
                 Text("直连光鸭 / 百度 / 夸克网盘，递归扫描音乐文件，通过网易云音乐与 QQ 音乐匹配封面、专辑与歌词。免费签名 7 天有效，到期用 Sideloadly 覆盖安装即可。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -222,6 +222,8 @@ struct CacheManageView: View {
     @State private var count = 0
     @State private var streamText = "计算中…"
     @State private var streamCount = 0
+    @State private var lyricsText = "计算中…"
+    @State private var lyricsCount = 0
 
     var body: some View {
         ScrollView {
@@ -273,6 +275,31 @@ struct CacheManageView: View {
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.plain)
+
+                Divider().padding(.vertical, 4)
+
+                VStack(spacing: 6) {
+                    Text(lyricsText).font(.title3.weight(.bold))
+                    Text("\(lyricsCount) 首歌的歌词（命中后切歌秒出）")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 22)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+
+                Button(role: .destructive) {
+                    LyricsCache.clear()
+                    refresh()
+                } label: {
+                    Text("清空歌词缓存")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
             }
             .padding(Theme.pagePadding)
         }
@@ -295,6 +322,9 @@ struct CacheManageView: View {
 
         streamCount = StreamCache.count
         streamText = ByteCountFormatter.string(fromByteCount: StreamCache.totalSize, countStyle: .file)
+
+        lyricsCount = LyricsCache.count
+        lyricsText = ByteCountFormatter.string(fromByteCount: LyricsCache.totalSize, countStyle: .file)
     }
 
     private func clearCache() {

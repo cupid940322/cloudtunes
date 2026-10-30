@@ -533,8 +533,9 @@ struct LibraryDetailView: View {
               !lib.tracks.isEmpty else { return }
         var list = lib.tracks.map { $0.toTrack(kind: lib.providerKind) }
         if shuffle { list.shuffle() }
-        PlayerManager.shared.play(tracks: list, at: 0, provider: provider)
+        // 先设模式再起播：play() 会依据当前模式决定是否把「当前曲」放到队首
         PlayerManager.shared.setShuffled(shuffle)
+        PlayerManager.shared.play(tracks: list, at: 0, provider: provider)
     }
 
     private func play(lib: MusicLibrary, tracks: [LibraryTrack], startAt id: String) {

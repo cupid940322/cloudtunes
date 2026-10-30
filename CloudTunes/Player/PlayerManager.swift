@@ -53,6 +53,11 @@ final class PlayerManager: NSObject, ObservableObject {
     /// 锁屏封面缓存（避免每秒读盘）
     private var npArtworkKey: String?
     private var npArtwork: MPMediaItemArtwork?
+    /// 歌词预取任务
+    private var prefetchTask: Task<Void, Never>?
+    /// 云盘目录缓存（同名 .lrc 查找用，避免每首歌都重新列目录）
+    private var listingCache: [String: (files: [CloudFile], at: Date)] = [:]
+    private let listingLock = NSLock()
 
     // MARK: - 播放结束自动下一首（含后台/熄屏）
 
@@ -241,7 +246,6 @@ final class PlayerManager: NSObject, ObservableObject {
               let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
         playAt(currentIndex, provider: p)
     }
-
     func playAt(_ index: Int, provider: CloudProvider) {
         guard queue.indices.contains(index) else { return }
         // 取消还在路上的旧请求，避免快速切歌时旧结果把新歌顶掉
@@ -379,20 +383,40 @@ final class PlayerManager: NSObject, ObservableObject {
         updateNowPlaying()
     }
 
+    /// 下一首：**永远会往前走**（到末尾就回绕），不再依赖「列表循环」开关。
+    /// 之前只有在 repeatMode == .all 时才回绕，导致随机模式下停到列表末尾后按下一首毫无反应。
     func next(provider: CloudProvider) {
-        if currentIndex + 1 < queue.count {
-            playAt(currentIndex + 1, provider: provider)
-        } else if repeatMode == .all, !queue.isEmpty {
-            playAt(0, provider: provider)
+        guard !queue.isEmpty else { return }
+        guard queue.count > 1 else { playAt(0, provider: provider); return }
+
+        var nextIndex = currentIndex + 1
+        if nextIndex >= queue.count {
+            if isShuffled {
+                reshuffleAndRestart(provider: provider)
+                return
+            }
+            nextIndex = 0
         }
+        playAt(nextIndex, provider: provider)
     }
 
+    /// 上一首：同样会回绕（在第 1 首按上一首 → 跳到最后一首）
     func previous(provider: CloudProvider) {
-        if currentIndex - 1 >= 0 {
-            playAt(currentIndex - 1, provider: provider)
-        } else if repeatMode == .all, !queue.isEmpty {
-            playAt(queue.count - 1, provider: provider)
-        }
+        guard !queue.isEmpty else { return }
+        guard queue.count > 1 else { playAt(0, provider: provider); return }
+
+        var index = currentIndex - 1
+        if index < 0 { index = queue.count - 1 }
+        playAt(index, provider: provider)
+    }
+
+    /// 随机模式播到末尾：重新洗一轮，且保证第一首不是刚播完的那首
+    private func reshuffleAndRestart(provider: CloudProvider) {
+        guard queue.count > 1 else { playAt(0, provider: provider); return }
+        let currentID = currentTrack?.id
+        queue = queue.shuffled()
+        if queue.first?.id == currentID { queue.swapAt(0, 1) }
+        playAt(0, provider: provider)
     }
 
     func seek(to seconds: TimeInterval) {
@@ -410,69 +434,160 @@ final class PlayerManager: NSObject, ObservableObject {
 
     // MARK: - 歌词
 
-    /// 歌词获取优先级：
-    /// 1) 云盘目录中同名 .lrc 文件  2) LRCLIB 在线匹配  3) 提示手动搜索
-    private func loadLyrics(for track: Track) async {
-        // 1. 同目录同名 .lrc
-        if let lrcFile = await findSiblingLRC(for: track),
-           let provider = ProviderRegistry.provider(kind: track.providerKind),
-           let (url, headers) = try? await provider.streamURL(file: lrcFile) {
-            var req = URLRequest(url: url)
-            headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
-            if let (data, _) = try? await URLSession.shared.data(for: req),
-               let text = String(data: data, encoding: .utf8) {
-                let lines = LRCParser.parse(text)
-                if !lines.isEmpty {
-                    await MainActor.run {
-                        lyricLines = lines
-                        lyricSourceNote = "歌词来源：云盘同名 .lrc"
-                    }
-                    return
-                }
-            }
-        }
-        // 2. 网易云歌词（中文歌命中率最高）
-        if let text = await LyricsService.neteaseLyrics(title: track.title,
-                                                        artist: track.artist,
-                                                        neteaseID: track.neteaseID) {
-            let lines = LRCParser.parse(text)
-            if !lines.isEmpty {
-                await MainActor.run {
-                    lyricLines = lines
-                    lyricSourceNote = "歌词来源：网易云音乐"
-                }
-                return
-            }
-        }
-        // 3. LRCLIB
-        if let candidates = try? await LyricsService.search(title: track.title, artist: track.artist),
-           let first = candidates.first(where: { $0.synced }) ?? candidates.first {
-            let parsed = first.syncedLyrics.map { LRCParser.parse($0) } ?? []
-            await MainActor.run {
-                lyricLines = parsed
-                lyricSourceNote = first.synced
-                    ? "歌词来源：LRCLIB（\(first.artistName) - \(first.trackName)）"
-                    : "歌词来源：LRCLIB（纯文本，无逐行时间轴）"
-                if parsed.isEmpty, let plain = first.plain {
-                    lyricLines = plain.components(separatedBy: .newlines)
-                        .enumerated()
-                        .map { LyricLine(id: $0.offset, time: -1, text: $0.element) }
-                }
-            }
-            return
-        }
-        await MainActor.run { lyricSourceNote = "未匹配到歌词，可在播放页手动搜索" }
+    /// 一次歌词查询的结果
+    struct LyricHit {
+        var lines: [LyricLine]
+        var note: String
     }
 
-    private func findSiblingLRC(for track: Track) async -> CloudFile? {
-        guard let provider = ProviderRegistry.provider(kind: track.providerKind) else { return nil }
-        // 各网盘父目录 id 存放在 CloudFile.extra["parentID"]
-        guard let parent = track.file.extra["parentID"] else { return nil }
-        guard let siblings = try? await provider.list(folderID: parent) else { return nil }
-        let base = (track.file.name as NSString).deletingPathExtension
-        return siblings.first {
-            !$0.isFolder && (($0.name as NSString).deletingPathExtension == base)
-                && $0.name.lowercased().hasSuffix(".lrc")
+    /// 歌词加载：先查缓存（切歌瞬间出歌词），未命中再「云盘同名 .lrc / 网易云 / LRCLIB」三路并发抢答。
+    /// 之前是串行三连（还要先列一次云盘目录），国内网络下 3~8 秒，所以总是"加载中"。
+    private func loadLyrics(for track: Track) async {
+        let key = LyricsCache.key(title: track.title, artist: track.artist)
+
+        if let hit = LyricsCache.get(key) {
+            await MainActor.run {
+                lyricLines = hit.lines
+                lyricSourceNote = hit.note
+            }
+            await prefetchNextLyrics()
+            return
         }
+
+        let hit = await withTaskGroup(of: LyricHit?.self) { group -> LyricHit? in
+            group.addTask { await self.siblingLRC(for: track) }
+            group.addTask { await self.neteaseLyrics(for: track) }
+            group.addTask { await self.lrclibLyrics(for: track) }
+            var winner: LyricHit?
+            for await r in group {
+                if let r, !r.lines.isEmpty { winner = r; break }
+            }
+            group.cancelAll()
+            return winner
+        }
+
+        if let hit {
+            LyricsCache.store(hit.lines, note: hit.note, for: key)
+            await MainActor.run {
+                lyricLines = hit.lines
+                lyricSourceNote = hit.note
+            }
+        } else {
+            await MainActor.run { lyricSourceNote = "未匹配到歌词，可在播放页手动搜索" }
+        }
+        await prefetchNextLyrics()
+    }
+
+    /// 云盘同目录同名 .lrc
+    private func siblingLRC(for track: Track) async -> LyricHit? {
+        await withTimeout(5) {
+            guard let provider = ProviderRegistry.provider(kind: track.providerKind) else { return nil }
+            guard let parent = track.file.extra["parentID"],
+                  let siblings = await self.cachedListing(provider: provider, folderID: parent) else { return nil }
+            let base = (track.file.name as NSString).deletingPathExtension
+            guard let lrc = siblings.first(where: {
+                !$0.isFolder
+                    && $0.name.lowercased().hasSuffix(".lrc")
+                    && ($0.name as NSString).deletingPathExtension == base
+            }) else { return nil }
+
+            guard let (url, headers) = try? await provider.streamURL(file: lrc) else { return nil }
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 8
+            headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+            guard let (data, _) = try? await URLSession.shared.data(for: req),
+                  let text = Self.decodeText(data) else { return nil }
+            let lines = LRCParser.parse(text)
+            return lines.isEmpty ? nil : LyricHit(lines: lines, note: "歌词来源：云盘同名 .lrc")
+        }
+    }
+
+    /// 网易云歌词（中文歌命中率最高）
+    private func neteaseLyrics(for track: Track) async -> LyricHit? {
+        await withTimeout(7) {
+            guard let text = await LyricsService.neteaseLyrics(title: track.title,
+                                                               artist: track.artist,
+                                                               neteaseID: track.neteaseID) else { return nil }
+            let lines = LRCParser.parse(text)
+            return lines.isEmpty ? nil : LyricHit(lines: lines, note: "歌词来源：网易云音乐")
+        }
+    }
+
+    /// LRCLIB（外网，国内可能较慢，超时就让位给网易云）
+    private func lrclibLyrics(for track: Track) async -> LyricHit? {
+        await withTimeout(6) {
+            guard let candidates = try? await LyricsService.search(title: track.title, artist: track.artist),
+                  let first = candidates.first(where: { $0.synced }) ?? candidates.first else { return nil }
+            var lines = first.syncedLyrics.map { LRCParser.parse($0) } ?? []
+            if lines.isEmpty, let plain = first.plain {
+                lines = plain.components(separatedBy: .newlines)
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                    .enumerated()
+                    .map { LyricLine(id: $0.offset, time: -1, text: $0.element) }
+            }
+            guard !lines.isEmpty else { return nil }
+            let note = first.synced
+                ? "歌词来源：LRCLIB（\(first.artistName) - \(first.trackName)）"
+                : "歌词来源：LRCLIB（纯文本，无逐行时间轴）"
+            return LyricHit(lines: lines, note: note)
+        }
+    }
+
+    /// 提前把下一首的歌词抓好，切歌时直接命中缓存
+    @MainActor
+    private func prefetchNextLyrics() {
+        let nextIndex = currentIndex + 1
+        guard queue.indices.contains(nextIndex) else { return }
+        let next = queue[nextIndex]
+        guard next.id != currentTrack?.id else { return }
+        let key = LyricsCache.key(title: next.title, artist: next.artist)
+        guard LyricsCache.get(key) == nil else { return }
+
+        prefetchTask?.cancel()
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            var hit = await self.neteaseLyrics(for: next)
+            if hit == nil { hit = await self.lrclibLyrics(for: next) }
+            if let hit {
+                LyricsCache.store(hit.lines, note: hit.note, for: key)
+            }
+        }
+    }
+
+    /// 云盘目录缓存：同名 .lrc 查找不必每首歌都重新列一次目录（夸克目录还是分页的，很慢）
+    private func cachedListing(provider: CloudProvider, folderID: String) async -> [CloudFile]? {
+        let key = "\(provider.kind.rawValue)|\(folderID)"
+        listingLock.lock()
+        let cached = listingCache[key]
+        listingLock.unlock()
+        if let cached, Date().timeIntervalSince(cached.at) < 600 { return cached.files }
+
+        guard let files = try? await provider.list(folderID: folderID) else { return nil }
+        listingLock.lock()
+        if listingCache.count > 12 { listingCache.removeAll() }
+        listingCache[key] = (files, Date())
+        listingLock.unlock()
+        return files
+    }
+
+    /// 超时保护：在线服务偶尔会挂很久，不能让歌词一直"加载中"
+    private func withTimeout<T: Sendable>(_ seconds: Double, _ operation: @escaping () async -> T?) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { await operation() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// LRC 文件编码兜底：不少中文歌词是 GB18030/GBK
+    private static func decodeText(_ data: Data) -> String? {
+        if let s = String(data: data, encoding: .utf8), !s.isEmpty { return s }
+        if let s = String(data: data, encoding: String.Encoding(rawValue: 0x8000_0632)), !s.isEmpty { return s }
+        return nil
     }
 }
