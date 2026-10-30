@@ -17,7 +17,7 @@ enum StreamCache {
         return dir
     }
 
-    static func fileName(forKey key: String, source fileName: String) -> String {
+    static func cacheFileName(forKey key: String, source fileName: String) -> String {
         let safe = key.map { $0.isLetter || $0.isNumber ? $0 : "_" }
         let base = String(safe.prefix(72))
         let ext = (fileName as NSString).pathExtension.lowercased()
@@ -25,10 +25,10 @@ enum StreamCache {
     }
 
     static func existing(key: String, source fileName: String) -> URL? {
-        let url = directory.appendingPathComponent(fileName(forKey: key, source: fileName))
+        let url = directory.appendingPathComponent(cacheFileName(forKey: key, source: fileName))
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let attrs: [FileAttributeKey: Any] = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         return size > 0 ? url : nil
     }
 
@@ -48,7 +48,7 @@ enum StreamCache {
         guard (200..<300).contains(http.statusCode) else {
             throw CloudError.network("直链返回 HTTP \(http.statusCode)（Cookie 可能已过期，或该文件需要会员权限）")
         }
-        let dest = directory.appendingPathComponent(fileName(forKey: key, source: fileName))
+        let dest = directory.appendingPathComponent(cacheFileName(forKey: key, source: fileName))
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: tmp, to: dest)
         trim()

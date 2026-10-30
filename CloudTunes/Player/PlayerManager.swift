@@ -315,12 +315,14 @@ final class PlayerManager: NSObject, ObservableObject {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 9_000_000_000)
-            await MainActor.run {
-                guard let self, self.currentIndex == index, self.isPlaying, !self.isFallingBack else { return }
-                guard self.currentTime < 0.5 else { return }
-                self.fallbackToCache(track: track, index: index, link: link, reason: "连接超时")
-            }
+            await self?.watchdogFired(index: index, track: track, link: link)
         }
+    }
+
+    @MainActor
+    private func watchdogFired(index: Int, track: Track, link: (url: URL, headers: [String: String])) {
+        guard currentIndex == index, isPlaying, !isFallingBack, currentTime < 0.5 else { return }
+        fallbackToCache(track: track, index: index, link: link, reason: "连接超时")
     }
 
     /// 直链被拒绝 → 用带完整请求头的 URLSession 把文件拉到本地缓存再播
