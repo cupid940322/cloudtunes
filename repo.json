@@ -19,15 +19,15 @@
       "iconURL": "https://gh-proxy.com/https://raw.githubusercontent.com/cupid940322/cloudtunes/main/icon.png",
       "tintColor": "#5DCAA5",
       "category": "utilities",
-      "size": 2945587,
+      "size": 2947016,
       "versions": [
         {
-          "version": "1.4",
-          "date": "2026-10-31T13:52:04Z",
-          "downloadURL": "https://gh-proxy.com/https://github.com/cupid940322/cloudtunes/releases/download/app-latest/CloudTunes-1.4-34.ipa",
-          "size": 2945587,
-          "localizedDescription": "版本 1.4（构建 34），由 CI 自动发布。",
-          "buildVersion": "34"
+          "version": "1.5",
+          "date": "2026-10-31T14:04:35Z",
+          "downloadURL": "https://gh-proxy.com/https://github.com/cupid940322/cloudtunes/releases/download/app-latest/CloudTunes-1.5-35.ipa",
+          "size": 2947016,
+          "localizedDescription": "版本 1.5（构建 35），由 CI 自动发布。",
+          "buildVersion": "35"
         }
       ]
     }
