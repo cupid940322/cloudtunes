@@ -3,6 +3,9 @@ name: Build iOS (unsigned ipa)
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'repo.json'
+      - 'icon.png'
   workflow_dispatch:
 
 jobs:
@@ -13,6 +16,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Read version
+        run: |
+          VERSION=$(cat VERSION | tr -d ' \r\n')
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "BUILD_NUMBER=${{ github.run_number }}" >> $GITHUB_ENV
+          echo "本次构建版本：$VERSION (${{ github.run_number }})"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -32,6 +42,8 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             build 2>&1 | tee build.log | tail -n 40
 
       - name: Upload build log (on failure)
@@ -72,5 +84,38 @@ jobs:
           name: CloudTunes 最新安装包
           body: |
             云音盒 CloudTunes 未签名 ipa（由 CI 自动构建，可直接用 Sideloadly 签名安装）
+            版本：${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
             构建提交：${{ github.sha }}
           files: CloudTunes-unsigned.ipa
+
+      - name: Update AltStore source (repo.json)
+        run: |
+          SIZE=$(stat -f%z CloudTunes-unsigned.ipa)
+          export IPA_SIZE=$SIZE
+          node -e '
+          const fs = require("fs");
+          const p = "repo.json";
+          const s = JSON.parse(fs.readFileSync(p, "utf8"));
+          const app = s.apps[0];
+          const v = app.versions[0];
+          const ver = process.env.APP_VERSION;
+          const build = process.env.BUILD_NUMBER;
+          const size = Number(process.env.IPA_SIZE);
+          v.version = ver;
+          v.buildVersion = build;
+          v.date = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+          v.size = size;
+          v.localizedDescription = "版本 " + ver + "（构建 " + build + "），由 CI 自动发布。";
+          app.size = size;
+          fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
+          console.log("repo.json 已更新：" + ver + " (" + build + "), " + size + " bytes");
+          '
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repo.json
+          if git diff --cached --quiet; then
+            echo "repo.json 无变化，跳过提交"
+          else
+            git commit -m "chore(source): 自动更新到 ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }}) [skip ci]"
+            git push
+          fi

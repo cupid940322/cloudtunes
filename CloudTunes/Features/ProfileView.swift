@@ -198,12 +198,19 @@ struct ProfileView: View {
         .padding(.vertical, 12)
     }
 
+    private var appVersionText: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "汤圆云音盒 \(short) (\(build))"
+    }
+
     private var aboutSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "关于")
             VStack(alignment: .leading, spacing: 6) {
-                Text("汤圆云音盒 1.4").font(.subheadline.weight(.medium))
-                Text("直连光鸭 / 百度 / 夸克网盘，递归扫描音乐文件，通过网易云音乐与 QQ 音乐匹配封面、专辑与歌词。免费签名 7 天有效，到期用 Sideloadly 覆盖安装即可。")
+                Text(appVersionText).font(.subheadline.weight(.medium))
+                Text("直连光鸭 / 百度 / 夸克网盘，递归扫描音乐文件，通过网易云音乐与 QQ 音乐匹配封面、专辑与歌词。通过 AltStore 设备端签名安装，到期前插上充电器即可自动续签。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
