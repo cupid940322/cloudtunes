@@ -16,6 +16,10 @@ targets:
     platform: iOS
     sources:
       - path: CloudTunes
+    dependencies:
+      - target: CloudTunesWidget
+    entitlements:
+      path: CloudTunes/CloudTunes.entitlements
     info:
       path: CloudTunes/Info.plist
       properties:
@@ -27,6 +31,10 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        CFBundleURLTypes:
+          - CFBundleURLName: com.gysbs.cloudtunes
+            CFBundleURLSchemes:
+              - cloudtunes
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         ITSAppUsesNonExemptEncryption: false
@@ -36,6 +44,25 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  CloudTunesWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CloudTunesWidget
+      - path: CloudTunes/Shared
+    entitlements:
+      path: CloudTunesWidget/CloudTunesWidget.entitlements
+    info:
+      path: CloudTunesWidget/Info.plist
+      properties:
+        CFBundleDisplayName: 汤圆云音盒
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gysbs.cloudtunes.widget
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: true
 schemes:
   CloudTunes:
     build:

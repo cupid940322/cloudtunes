@@ -39,8 +39,16 @@ enum AppTab: Int, CaseIterable, Identifiable {
     }
 }
 
+/// 全局 UI 状态（供任意页面打开播放页）
+@MainActor
+final class AppUIState: ObservableObject {
+    static let shared = AppUIState()
+    @Published var showPlayer = false
+}
+
 struct RootView: View {
     @ObservedObject private var player = PlayerManager.shared
+    @ObservedObject private var ui = AppUIState.shared
     @State private var tab: AppTab = .home
     @State private var showPlayer = false
 
@@ -62,7 +70,7 @@ struct RootView: View {
 
             VStack(spacing: 8) {
                 if player.currentTrack != nil {
-                    MiniPlayerBar { showPlayer = true }
+                    MiniPlayerBar { ui.showPlayer = true }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 CustomTabBar(selection: $tab)
@@ -71,8 +79,14 @@ struct RootView: View {
             .padding(.bottom, 2)
             .animation(.spring(response: 0.34, dampingFraction: 0.85), value: player.currentTrack?.id)
         }
-        .fullScreenCover(isPresented: $showPlayer) {
+        .fullScreenCover(isPresented: $ui.showPlayer) {
             PlayerView()
+        }
+        .onOpenURL { url in
+            // 小组件点击进入播放页
+            if url.scheme == "cloudtunes" {
+                ui.showPlayer = true
+            }
         }
         .tint(Theme.accent)
     }

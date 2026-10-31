@@ -165,6 +165,39 @@ final class PlayerManager: NSObject, ObservableObject {
         }
         if let npArtwork { info[MPMediaItemPropertyArtwork] = npArtwork }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
+        pushWidgetSnapshot(track: track)
+    }
+
+    // MARK: - 桌面小组件同步
+
+    private var widgetCoverKey: String?
+    private var widgetLastSignature = ""
+
+    /// 每 5 秒（或换歌/暂停时）把正在播放的快照写给小组件
+    private func pushWidgetSnapshot(track: Track) {
+        let signature = "\(track.id)|\(isPlaying)|\(Int(currentTime / 5))"
+        guard signature != widgetLastSignature else { return }
+        widgetLastSignature = signature
+
+        var cover: UIImage?
+        if widgetCoverKey != track.id {
+            widgetCoverKey = track.id
+            cover = MetadataScraper.artworkURL(file: track.artworkFile)
+                .flatMap { UIImage(contentsOfFile: $0.path) }
+        }
+        let snapshot = WidgetBridge.Snapshot(
+            title: track.title,
+            artist: track.displayArtist,
+            isPlaying: isPlaying,
+            position: currentTime,
+            duration: duration,
+            index: currentIndex + 1,
+            total: queue.count,
+            updatedAt: Date()
+        )
+        WidgetBridge.save(snapshot, cover: cover)
+        WidgetBridge.reload()
     }
 
     private func addTimeObserver() {

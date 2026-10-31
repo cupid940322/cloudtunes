@@ -66,8 +66,19 @@ jobs:
 
       - name: Package unsigned ipa
         run: |
+          brew install ldid
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/CloudTunes.app Payload/
+          # 用 ldid 把 entitlements（App Group）嵌入二进制，
+          # AltStore 重新签名时会读取并为其生成带 App Group 的描述文件
+          ldid -SCloudTunes/CloudTunes.entitlements Payload/CloudTunes.app/CloudTunes
+          WIDGET_BIN=$(find Payload/CloudTunes.app/PlugIns -name "CloudTunesWidget" -type f 2>/dev/null | head -1)
+          if [ -n "$WIDGET_BIN" ]; then
+            ldid -SCloudTunesWidget/CloudTunesWidget.entitlements "$WIDGET_BIN"
+            echo "已嵌入小组件 entitlements: $WIDGET_BIN"
+          else
+            echo "警告：未找到小组件 appex"
+          fi
           zip -qry CloudTunes-unsigned.ipa Payload
           ls -lh CloudTunes-unsigned.ipa
 

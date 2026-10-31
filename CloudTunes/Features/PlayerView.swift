@@ -8,6 +8,7 @@ struct PlayerView: View {
 
     @State private var showLyrics = false
     @State private var showLyricSearch = false
+    @State private var showQueue = false
     @State private var showEdit = false
     @State private var dragValue: Double = 0
     @State private var isDragging = false
@@ -47,6 +48,9 @@ struct PlayerView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showLyricSearch) {
             LyricSearchSheet()
+        }
+        .sheet(isPresented: $showQueue) {
+            PlayQueueSheet()
         }
         .sheet(isPresented: $showEdit) {
             if let track, let ref = store.track(id: track.id) {
@@ -326,10 +330,21 @@ struct PlayerView: View {
             }
             .frame(maxWidth: .infinity)
 
-            Text("\(player.currentIndex + 1)/\(max(player.queue.count, 1))")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.white.opacity(0.55))
-                .frame(maxWidth: .infinity)
+            Button {
+                showQueue = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("\(player.currentIndex + 1)/\(max(player.queue.count, 1))")
+                        .font(.caption.monospacedDigit())
+                }
+                .foregroundStyle(.white.opacity(0.8))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.white.opacity(0.12), in: Capsule())
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 }

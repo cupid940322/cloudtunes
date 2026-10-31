@@ -101,7 +101,9 @@ struct HomeTabView: View {
 
     @ViewBuilder
     private var continueCard: some View {
-        if let item = store.recentTracks.first {
+        if let now = player.currentTrack {
+            NowPlayingHomeCard(track: now)
+        } else if let item = store.recentTracks.first {
             Button {
                 play(ref: item)
             } label: {
@@ -259,6 +261,114 @@ struct HomeTabView: View {
         guard let provider = ProviderRegistry.provider(kind: ref.library.providerKind) else { return }
         PlayerManager.shared.play(tracks: [ref.track.toTrack(kind: ref.library.providerKind)],
                                   at: 0, provider: provider)
+    }
+}
+
+// MARK: - 首页正在播放卡片（实时同步）
+
+/// 首页顶部的「继续播放」卡片：有歌在播时实时显示当前曲目与进度
+struct NowPlayingHomeCard: View {
+    let track: Track
+    @ObservedObject private var player = PlayerManager.shared
+
+    private var progress: Double {
+        guard player.duration > 0 else { return 0 }
+        return max(0, min(1, player.currentTime / player.duration))
+    }
+
+    var body: some View {
+        Button {
+            AppUIState.shared.showPlayer = true
+        } label: {
+            VStack(spacing: 0) {
+                HStack(spacing: 14) {
+                    ZStack {
+                        CoverView(file: track.artworkFile, size: 64, corner: 14, showsShadow: true)
+                        if !player.isPlaying {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(.black.opacity(0.35))
+                                .frame(width: 64, height: 64)
+                            Image(systemName: "pause.fill")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(player.isPlaying ? Theme.accent : Color.white.opacity(0.6))
+                                .frame(width: 6, height: 6)
+                            Text(player.isPlaying ? "正在播放" : "已暂停")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.85))
+                        }
+                        Text(track.title)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text(track.displayArtist)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                    Spacer()
+
+                    Button {
+                        player.togglePlay()
+                    } label: {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 40, height: 40)
+                            .background(.white, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+                .padding(.bottom, player.duration > 0 ? 10 : 14)
+
+                if player.duration > 0 {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ThinProgressBar(value: progress, height: 3)
+                        HStack {
+                            Text(player.currentTime.formattedTime)
+                            Spacer()
+                            Text(player.duration.formattedTime)
+                        }
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.7))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 12)
+                }
+            }
+            .background {
+                LinearGradient(colors: [Color(red: 0.32, green: 0.26, blue: 0.42),
+                                        Color(red: 0.20, green: 0.20, blue: 0.30)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .overlay {
+                        if let img = ArtworkCache.shared.image(named: track.artworkFile, target: 300) {
+                            Image(uiImage: img)
+                                .resizable()
+                                .scaledToFill()
+                                .blur(radius: 40)
+                                .opacity(0.55)
+                                .animation(.easeInOut(duration: 0.35), value: track.id)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
+        }
+        .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.25), value: track.id)
+        .padding(.horizontal, Theme.pagePadding)
     }
 }
 
