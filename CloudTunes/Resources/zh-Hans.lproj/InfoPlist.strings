@@ -1,4 +1,5 @@
-/* 主屏幕 / 小组件库里显示的中文名
-   Info.plist 里的 CFBundleDisplayName 必须是 ASCII（AltStore 签名要求），
-   中文名通过本地化覆盖，安装后桌面依然显示「汤圆云音盒」。 */
-"CFBundleDisplayName" = "汤圆云音盒";
+/* Home screen / widget gallery display name (Chinese: TangYuan YunYinHe).
+   CFBundleDisplayName in Info.plist must stay pure ASCII because AltStore
+   strips non-ASCII characters when registering the App ID.
+   The Chinese name is provided here with \U escapes so this file stays ASCII. */
+"CFBundleDisplayName" = "\U6C64\U5706\U4E91\U97F3\U76D2";
