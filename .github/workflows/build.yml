@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - 'repo.json'
       - 'icon.png'
+      - 'VERSION'
   workflow_dispatch:
 
 jobs:
@@ -110,12 +111,21 @@ jobs:
           fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
           console.log("repo.json 已更新：" + ver + " (" + build + "), " + size + " bytes");
           '
+          NEXT=$(node -e '
+          const v = process.env.APP_VERSION.split(".");
+          const i = v.length - 1;
+          const n = Number(v[i]) + 1;
+          v[i] = String(isNaN(n) ? 1 : n);
+          console.log(v.join("."));
+          ')
+          echo "$NEXT" > VERSION
+          echo "下次构建版本号将自动为：$NEXT"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add repo.json
+          git add repo.json VERSION
           if git diff --cached --quiet; then
-            echo "repo.json 无变化，跳过提交"
+            echo "无需提交"
           else
-            git commit -m "chore(source): 自动更新到 ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }}) [skip ci]"
+            git commit -m "chore(release): 发布 ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})，版本号自动递增至 $NEXT [skip ci]"
             git push
           fi
