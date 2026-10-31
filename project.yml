@@ -16,6 +16,8 @@ targets:
     platform: iOS
     sources:
       - path: CloudTunes
+        excludes:
+          - "Resources/**"
     dependencies:
       - target: CloudTunesWidget
     entitlements:
@@ -23,7 +25,11 @@ targets:
     info:
       path: CloudTunes/Info.plist
       properties:
-        CFBundleDisplayName: 汤圆云音盒
+        # 注意：这里必须是纯 ASCII。
+        # AltStore 注册 App ID 时会过滤掉非 ASCII 字符，
+        # 中文名被过滤成空串后就会报 `The name "" contains invalid characters`。
+        # 桌面显示的中文名由 Resources/zh-Hans.lproj/InfoPlist.strings 提供。
+        CFBundleDisplayName: TangYuanMusic
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
@@ -55,7 +61,7 @@ targets:
     info:
       path: CloudTunesWidget/Info.plist
       properties:
-        CFBundleDisplayName: 汤圆云音盒
+        CFBundleDisplayName: TangYuanMusicWidget
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

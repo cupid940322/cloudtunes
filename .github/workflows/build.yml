@@ -75,10 +75,22 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PLIST"
           echo "App 版本已写入：$APP_VERSION ($BUILD_NUMBER)"
 
+          # ── 显示名必须是纯 ASCII ──────────────────────────────────
+          # AltStore / SideStore 在注册 App ID 时会过滤掉非 ASCII 字符，
+          # 中文名被过滤成空串 → 报 `The name "" contains invalid characters`，装不上。
+          # 所以包内写英文名，桌面中文名靠 zh-Hans.lproj/InfoPlist.strings 覆盖。
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName TangYuanMusic" "$APP_PLIST"
+          mkdir -p Payload/CloudTunes.app/zh-Hans.lproj
+          cp CloudTunes/Resources/zh-Hans.lproj/InfoPlist.strings Payload/CloudTunes.app/zh-Hans.lproj/
+          echo "显示名：Info.plist=TangYuanMusic，中文覆盖=zh-Hans.lproj/InfoPlist.strings"
+
           WIDGET_APPex=$(find Payload/CloudTunes.app/PlugIns -name "CloudTunesWidget.appex" -type d 2>/dev/null | head -1)
           if [ -n "$WIDGET_APPex" ]; then
             /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$WIDGET_APPex/Info.plist"
             /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$WIDGET_APPex/Info.plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName TangYuanMusicWidget" "$WIDGET_APPex/Info.plist"
+            mkdir -p "$WIDGET_APPex/zh-Hans.lproj"
+            cp CloudTunes/Resources/zh-Hans.lproj/InfoPlist.strings "$WIDGET_APPex/zh-Hans.lproj/"
             ldid -SCloudTunesWidget/CloudTunesWidget.entitlements "$WIDGET_APPex/CloudTunesWidget"
             echo "小组件版本已写入：$APP_VERSION ($BUILD_NUMBER)"
           fi
