@@ -63,7 +63,7 @@ struct NowPlayingWidgetView: View {
     var body: some View {
         Group {
             if let info = entry.info {
-                NowPlayingContent(info: info, cover: entry.cover)
+                NowPlayingContent(info: info, cover: entry.cover, entryDate: entry.date)
             } else {
                 emptyView
             }
@@ -89,6 +89,7 @@ struct NowPlayingWidgetView: View {
 private struct NowPlayingContent: View {
     let info: WidgetBridge.Snapshot
     let cover: UIImage?
+    let entryDate: Date
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
@@ -236,8 +237,8 @@ private struct NowPlayingContent: View {
     @ViewBuilder
     private var liveTimeText: some View {
         if info.isPlaying, info.duration > 0 {
-            let start = entry.date.addingTimeInterval(-info.position)
-            let end = entry.date.addingTimeInterval(info.duration - info.position)
+            let start = entryDate.addingTimeInterval(-info.position)
+            let end = entryDate.addingTimeInterval(info.duration - info.position)
             Text(timerInterval: start...end, countsDown: false)
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.white.opacity(0.8))
