@@ -69,18 +69,28 @@ jobs:
           brew install ldid
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/CloudTunes.app Payload/
+
+          APP_PLIST=Payload/CloudTunes.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$APP_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PLIST"
+          echo "App 版本已写入：$APP_VERSION ($BUILD_NUMBER)"
+
+          WIDGET_APPex=$(find Payload/CloudTunes.app/PlugIns -name "CloudTunesWidget.appex" -type d 2>/dev/null | head -1)
+          if [ -n "$WIDGET_APPex" ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$WIDGET_APPex/Info.plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$WIDGET_APPex/Info.plist"
+            ldid -SCloudTunesWidget/CloudTunesWidget.entitlements "$WIDGET_APPex/CloudTunesWidget"
+            echo "小组件版本已写入：$APP_VERSION ($BUILD_NUMBER)"
+          fi
+
           # 用 ldid 把 entitlements（App Group）嵌入二进制，
           # AltStore 重新签名时会读取并为其生成带 App Group 的描述文件
           ldid -SCloudTunes/CloudTunes.entitlements Payload/CloudTunes.app/CloudTunes
-          WIDGET_BIN=$(find Payload/CloudTunes.app/PlugIns -name "CloudTunesWidget" -type f 2>/dev/null | head -1)
-          if [ -n "$WIDGET_BIN" ]; then
-            ldid -SCloudTunesWidget/CloudTunesWidget.entitlements "$WIDGET_BIN"
-            echo "已嵌入小组件 entitlements: $WIDGET_BIN"
-          else
-            echo "警告：未找到小组件 appex"
-          fi
+
           zip -qry CloudTunes-unsigned.ipa Payload
-          ls -lh CloudTunes-unsigned.ipa
+          # 带版本号的文件名：每次发布 URL 都不同，避免镜像缓存旧包
+          cp CloudTunes-unsigned.ipa "CloudTunes-$APP_VERSION-$BUILD_NUMBER.ipa"
+          ls -lh CloudTunes-unsigned.ipa "CloudTunes-$APP_VERSION-$BUILD_NUMBER.ipa"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -98,7 +108,9 @@ jobs:
             云音盒 CloudTunes 未签名 ipa（由 CI 自动构建，可直接用 Sideloadly 签名安装）
             版本：${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
             构建提交：${{ github.sha }}
-          files: CloudTunes-unsigned.ipa
+          files: |
+            CloudTunes-unsigned.ipa
+            CloudTunes-${{ env.APP_VERSION }}-${{ env.BUILD_NUMBER }}.ipa
 
       - name: Update AltStore source (repo.json)
         run: |
@@ -117,6 +129,7 @@ jobs:
           v.buildVersion = build;
           v.date = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
           v.size = size;
+          v.downloadURL = "https://gh-proxy.com/https://github.com/cupid940322/cloudtunes/releases/download/app-latest/CloudTunes-" + ver + "-" + build + ".ipa";
           v.localizedDescription = "版本 " + ver + "（构建 " + build + "），由 CI 自动发布。";
           app.size = size;
           fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
