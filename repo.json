@@ -22,12 +22,12 @@
       "size": 2767236,
       "versions": [
         {
-          "version": "1.1",
-          "date": "2026-10-31T12:46:33Z",
+          "version": "1.2",
+          "date": "2026-10-31T13:11:48Z",
           "downloadURL": "https://gh-proxy.com/https://github.com/cupid940322/cloudtunes/releases/download/app-latest/CloudTunes-unsigned.ipa",
           "size": 2767236,
-          "localizedDescription": "版本 1.1（构建 30），由 CI 自动发布。",
-          "buildVersion": "30"
+          "localizedDescription": "版本 1.2（构建 31），由 CI 自动发布。",
+          "buildVersion": "31"
         }
       ]
     }
