@@ -68,6 +68,7 @@ struct NowPlayingWidgetView: View {
                 emptyView
             }
         }
+        .widgetBackground(cover: entry.info == nil ? nil : entry.cover)
         .widgetURL(URL(string: "cloudtunes://open"))
     }
 
@@ -86,15 +87,24 @@ struct NowPlayingWidgetView: View {
     }
 }
 
-private struct NowPlayingContent: View {
-    let info: WidgetBridge.Snapshot
+/// iOS 17 起系统要求小组件用 containerBackground API（否则画廊里会显示
+/// 「Please adopt containerBackground API」警示）。这里做版本兼容：
+/// iOS 17+ 走标准 API，iOS 16 退回普通 background。
+struct WidgetBackgroundModifier: ViewModifier {
     let cover: UIImage?
-    let entryDate: Date
-    @Environment(\.widgetFamily) private var family
 
-    var body: some View {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOSApplicationExtension 17.0, *) {
+            content.containerBackground(for: .widget) { Self.background(cover: cover) }
+        } else {
+            content.background(Self.background(cover: cover))
+        }
+    }
+
+    /// 背景：封面放大模糊 + 压暗；无封面时用品牌渐变
+    static func background(cover: UIImage?) -> some View {
         ZStack {
-            // 背景：封面放大模糊
             if let cover {
                 GeometryReader { geo in
                     Image(uiImage: cover)
@@ -111,7 +121,24 @@ private struct NowPlayingContent: View {
                                startPoint: .topLeading, endPoint: .bottomTrailing)
             }
             Color.black.opacity(0.22)
+        }
+    }
+}
 
+extension View {
+    func widgetBackground(cover: UIImage?) -> some View {
+        modifier(WidgetBackgroundModifier(cover: cover))
+    }
+}
+
+private struct NowPlayingContent: View {
+    let info: WidgetBridge.Snapshot
+    let cover: UIImage?
+    let entryDate: Date
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        Group {
             if family == .systemSmall {
                 smallLayout
             } else {

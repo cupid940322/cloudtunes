@@ -76,7 +76,15 @@ struct RootView: View {
                 CustomTabBar(selection: $tab)
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 2)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+            // 封闭式底栏：不透明背景一直铺到屏幕最底，
+            // 主界面内容从下面滚过时被完全挡住
+            .background(
+                Theme.background
+                    .overlay(alignment: .top) { Theme.hairline.frame(height: 0.5) }
+                    .ignoresSafeArea(edges: .bottom)
+            )
             .animation(.spring(response: 0.34, dampingFraction: 0.85), value: player.currentTrack?.id)
         }
         .fullScreenCover(isPresented: $ui.showPlayer) {

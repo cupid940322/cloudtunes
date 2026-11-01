@@ -147,6 +147,9 @@ final class LibraryStore: ObservableObject {
         guard let provider = ProviderRegistry.provider(kind: providerKind) else { return }
         let libID = UUID().uuidString
         progress[libID] = ScanProgress(phase: includeSubfolders ? "扫描目录…" : "读取目录…")
+        // 扫描 + 刮削可能持续很久，熄屏/切后台时保活，避免被系统挂起
+        BackgroundKeepAlive.shared.begin()
+        defer { BackgroundKeepAlive.shared.end() }
 
         let lib = MusicLibrary(id: libID,
                                name: name.isEmpty ? (folder.name.isEmpty ? providerKind.rawValue : folder.name) : name,
@@ -181,6 +184,8 @@ final class LibraryStore: ObservableObject {
         guard let lib = library(id: libraryID),
               let provider = ProviderRegistry.provider(kind: lib.providerKind) else { return }
         progress[libraryID] = ScanProgress(phase: "重新扫描…")
+        BackgroundKeepAlive.shared.begin()
+        defer { BackgroundKeepAlive.shared.end() }
         let root = CloudFile(id: lib.folderID, name: lib.folderName, size: 0, isFolder: true)
         let found = await collect(provider: provider, kind: lib.providerKind, root: root,
                                   includeSubfolders: lib.scansSubfolders, libID: libraryID)
@@ -205,6 +210,8 @@ final class LibraryStore: ObservableObject {
     func rescrapeAll(libraryID: String) async {
         guard let lib = library(id: libraryID) else { return }
         progress[libraryID] = ScanProgress(phase: "重置元数据…")
+        BackgroundKeepAlive.shared.begin()
+        defer { BackgroundKeepAlive.shared.end() }
 
         if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
             for i in libraries[idx].tracks.indices {
