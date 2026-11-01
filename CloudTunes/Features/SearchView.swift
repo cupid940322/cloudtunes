@@ -4,6 +4,7 @@ import SwiftUI
 struct SearchView: View {
     @ObservedObject private var store = LibraryStore.shared
     @State private var query = ""
+    @State private var showFavorites = false
     @FocusState private var focused: Bool
 
     private var results: [TrackRef] { store.search(query) }
@@ -52,6 +53,9 @@ struct SearchView: View {
                 .scrollDismissesKeyboard(.immediately)
             }
             .background(Theme.background)
+            .navigationDestination(isPresented: $showFavorites) {
+                FavoritesView()
+            }
         }
     }
 
@@ -99,8 +103,13 @@ struct SearchView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "快捷入口")
             HStack(spacing: 10) {
-                shortcut("收藏", "\(store.favoriteIDs.count) 首", "heart.fill", [Color(red: 0.98, green: 0.42, blue: 0.44),
-                                                                          Color(red: 0.99, green: 0.58, blue: 0.42)])
+                NavigationLink {
+                    FavoritesView()
+                } label: {
+                    shortcut("收藏", "\(store.favoriteIDs.count) 首", "heart.fill", [Color(red: 0.98, green: 0.42, blue: 0.44),
+                                                                              Color(red: 0.99, green: 0.58, blue: 0.42)])
+                }
+                .buttonStyle(.plain)
                 shortcut("最近播放", "\(store.recentIDs.count) 首", "clock.fill", [Color(red: 0.42, green: 0.55, blue: 0.98),
                                                                           Color(red: 0.55, green: 0.45, blue: 0.95)])
                 shortcut("音乐库", "\(store.libraries.count) 个", "square.stack.fill", [Color(red: 0.30, green: 0.75, blue: 0.62),
@@ -198,7 +207,10 @@ struct SearchView: View {
 
     private var favoriteSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "我的收藏", subtitle: "\(store.favoriteIDs.count) 首")
+            SectionHeader(title: "我的收藏",
+                          subtitle: "\(store.favoriteIDs.count) 首",
+                          actionTitle: "查看全部 ›",
+                          action: { showFavorites = true })
             VStack(spacing: 0) {
                 ForEach(store.favoriteTracks.prefix(4).indices, id: \.self) { idx in
                             let item = store.favoriteTracks.prefix(4)[idx]

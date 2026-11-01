@@ -299,9 +299,12 @@ final class PlayerManager: NSObject, ObservableObject {
         lyricSourceNote = "歌词加载中…"
         updateNowPlaying()
 
+        // 队列可能跨多个网盘（收藏 / 最近播放），按曲目自己所属的网盘取直链，
+        // 取不到再退回调用方传进来的 provider
+        let trackProvider = ProviderRegistry.provider(kind: track.providerKind) ?? provider
         loadTask = Task {
             do {
-                let link = try await provider.streamURL(file: track.file)
+                let link = try await trackProvider.streamURL(file: track.file)
                 try Task.checkCancellation()
                 await MainActor.run {
                     // 在取直链期间用户又切了别的歌

@@ -21,6 +21,7 @@ struct ProfileView: View {
                 ScrollView {
                     VStack(spacing: 20) {
                         statsRow
+                        mySection
                         providerSection
                         browseSection
                         dataSection
@@ -65,7 +66,12 @@ struct ProfileView: View {
         HStack(spacing: 10) {
             statCell("\(totalTracks)", "首歌曲")
             statCell("\(store.libraries.reduce(0) { $0 + $1.albumCount })", "张专辑")
-            statCell("\(store.favoriteIDs.count)", "首收藏")
+            NavigationLink {
+                FavoritesView()
+            } label: {
+                statCell("\(store.favoriteIDs.count)", "首收藏")
+            }
+            .buttonStyle(.plain)
             statCell("\(signedInKinds.count)", "个网盘")
         }
         .padding(.horizontal, Theme.pagePadding)
@@ -79,6 +85,36 @@ struct ProfileView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var mySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "我的")
+            VStack(spacing: 0) {
+                NavigationLink {
+                    FavoritesView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 26)
+                        Text("我的收藏").font(.subheadline).foregroundStyle(.primary)
+                        Spacer()
+                        Text("\(store.favoriteIDs.count) 首")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.quaternary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+            }
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .padding(.horizontal, Theme.pagePadding)
+        }
     }
 
     private var providerSection: some View {
