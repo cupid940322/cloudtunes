@@ -32,6 +32,11 @@ final class PlayerManager: NSObject, ObservableObject {
     @Published var isShuffled = false
     /// 播放状态提示（缓存中 / 直链被拒绝等），播放页顶部横幅展示
     @Published var playNote: String = ""
+    /// 上次的播放队列（App 重启 / 很久没听后，首页「继续播放」用它恢复整个列表）
+    @Published private(set) var savedSession: PlaybackSession?
+    /// 恢复会话时要跳到的位置
+    private var pendingSeek: Double = 0
+    private var lastPersistSignature = ""
 
     private var player = AVPlayer()
     private var timeObserver: Any?
@@ -108,8 +113,15 @@ final class PlayerManager: NSObject, ObservableObject {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default)
         try? session.setActive(true)
+        savedSession = PlaybackSession.load()
         addTimeObserver()
         setupRemoteCommands()
+        // 退到后台 / 锁屏时记下进度，下次「继续播放」能接着听
+        _ = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.persistSession()
+        }
     }
 
     // MARK: - 锁屏 / 耳机控制
@@ -194,6 +206,39 @@ final class PlayerManager: NSObject, ObservableObject {
             }
         }
     }()
+
+    // MARK: - 播放列表快照（首页「继续播放」用）
+
+    /// 把「整个队列 + 当前第几首 + 进度」写盘。
+    /// 换歌、暂停、退到后台时都会调用，所以下次点「继续播放」能接着整张列表听。
+    func persistSession() {
+        guard !queue.isEmpty, queue.indices.contains(currentIndex) else { return }
+        let signature = "\(queue.first?.id ?? "")|\(queue.count)|\(currentIndex)|\(Int(currentTime / 10))"
+        guard signature != lastPersistSignature else { return }
+        lastPersistSignature = signature
+
+        let session = PlaybackSession(tracks: queue,
+                                      index: currentIndex,
+                                      position: currentTime,
+                                      updatedAt: Date())
+        session.save()
+        savedSession = session
+    }
+
+    /// 恢复上次的整个播放列表，并从停下的位置继续
+    func resumeSavedSession() {
+        guard let session = savedSession,
+              !session.tracks.isEmpty,
+              session.tracks.indices.contains(session.index),
+              let provider = ProviderRegistry.provider(kind: session.tracks[session.index].providerKind)
+        else { return }
+        isShuffled = false
+        queue = session.tracks
+        originalQueue = session.tracks
+        playAt(session.index, provider: provider)
+        // playAt 内部会清零，所以在它之后设置
+        pendingSeek = session.position
+    }
 
     // MARK: - 桌面小组件同步
     private var widgetCoverKey: String?
@@ -313,6 +358,7 @@ final class PlayerManager: NSObject, ObservableObject {
         itemStatusObservation = nil
         isFallingBack = false
         currentIndex = index
+        pendingSeek = 0
         let track = queue[index]
         nowPlayingTitle = track.title
         currentTime = 0
@@ -323,6 +369,7 @@ final class PlayerManager: NSObject, ObservableObject {
         playNote = ""
         lyricSourceNote = "歌词加载中…"
         updateNowPlaying()
+        persistSession()
 
         // 队列可能跨多个网盘（收藏 / 最近播放），按曲目自己所属的网盘取直链，
         // 取不到再退回调用方传进来的 provider
@@ -366,6 +413,12 @@ final class PlayerManager: NSObject, ObservableObject {
         player.replaceCurrentItem(with: item)
         player.play()
         isPlaying = true
+        // 恢复会话时跳到上次停下的位置
+        if pendingSeek > 3 {
+            let target = CMTime(seconds: pendingSeek, preferredTimescale: 600)
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+        pendingSeek = 0
         updateNowPlaying()
 
         // AVPlayer 对请求头极敏感（夸克少一个 Referer 就 403），失败就直接转本地缓存
@@ -442,6 +495,7 @@ final class PlayerManager: NSObject, ObservableObject {
             isPlaying = true
         }
         updateNowPlaying()
+        persistSession()
     }
 
     /// 下一首：**永远会往前走**（到末尾就回绕），不再依赖「列表循环」开关。

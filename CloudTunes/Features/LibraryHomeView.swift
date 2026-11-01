@@ -8,6 +8,7 @@ struct HomeTabView: View {
 
     @State private var showProviderPicker = false
     @State private var pickingKind: CloudKind?
+    @State private var showRecent = false
     @State private var renameTarget: MusicLibrary?
     @State private var renameText = ""
 
@@ -37,6 +38,9 @@ struct HomeTabView: View {
             }
             .background(Theme.background)
             .scrollIndicators(.hidden)
+            .navigationDestination(isPresented: $showRecent) {
+                RecentTracksView()
+            }
             .confirmationDialog("选择网盘", isPresented: $showProviderPicker) {
                 ForEach(CloudKind.allCases) { kind in
                     if ProviderRegistry.provider(kind: kind)?.isSignedIn == true {
@@ -103,11 +107,43 @@ struct HomeTabView: View {
     private var continueCard: some View {
         if let now = player.currentTrack {
             NowPlayingHomeCard(track: now)
+        } else if let session = player.savedSession,
+                  session.tracks.indices.contains(session.index) {
+            // 没有在播的曲子，但上次有整张播放列表 → 点一下恢复整个队列继续听
+            let track = session.tracks[session.index]
+            Button {
+                player.resumeSavedSession()
+            } label: {
+                cardShell(artwork: track.artworkFile) {
+                    CoverView(file: track.artworkFile, size: 64, corner: 14, showsShadow: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("继续播放")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                        Text(track.title)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text("共 \(session.tracks.count) 首 · 上次听到 \(session.position.formattedTime)")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 40, height: 40)
+                        .background(.white, in: Circle())
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Theme.pagePadding)
         } else if let item = store.recentTracks.first {
             Button {
-                play(ref: item)
+                play(ref: item, in: store.recentTracks)
             } label: {
-                HStack(spacing: 14) {
+                cardShell(artwork: item.track.artworkFile) {
                     CoverView(file: item.track.artworkFile, size: 64, corner: 14, showsShadow: true)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("继续播放")
@@ -129,31 +165,37 @@ struct HomeTabView: View {
                         .frame(width: 40, height: 40)
                         .background(.white, in: Circle())
                 }
-                .padding(14)
-                .background {
-                    LinearGradient(colors: [Color(red: 0.32, green: 0.26, blue: 0.42),
-                                            Color(red: 0.20, green: 0.20, blue: 0.30)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
-                        .overlay {
-                            if let img = ArtworkCache.shared.image(named: item.track.artworkFile, target: 300) {
-                                Image(uiImage: img)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .blur(radius: 40)
-                                    .opacity(0.55)
-                            }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-                }
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                        .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
             }
             .buttonStyle(.plain)
             .padding(.horizontal, Theme.pagePadding)
         }
+    }
+
+    /// 继续播放卡片的通用外壳（封面模糊背景 + 描边 + 阴影）
+    private func cardShell<Content: View>(artwork: String?,
+                                          @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 14) { content() }
+            .padding(14)
+            .background {
+                LinearGradient(colors: [Color(red: 0.32, green: 0.26, blue: 0.42),
+                                        Color(red: 0.20, green: 0.20, blue: 0.30)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .overlay {
+                        if let img = ArtworkCache.shared.image(named: artwork, target: 300) {
+                            Image(uiImage: img)
+                                .resizable()
+                                .scaledToFill()
+                                .blur(radius: 40)
+                                .opacity(0.55)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
     }
 
     // MARK: 我的音乐库
@@ -212,7 +254,7 @@ struct HomeTabView: View {
                 HStack(spacing: 14) {
                     ForEach(recentlyAdded) { item in
                         Button {
-                            play(ref: item)
+                            play(ref: item, in: recentlyAdded)
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 CoverView(file: item.track.artworkFile, size: 124, corner: 14, showsShadow: true)
@@ -240,12 +282,14 @@ struct HomeTabView: View {
 
     private var recentSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "最近播放")
+            SectionHeader(title: "最近播放",
+                          actionTitle: "查看全部 ›",
+                          action: { showRecent = true })
             VStack(spacing: 0) {
                 ForEach(store.recentTracks.prefix(5).indices, id: \.self) { idx in
                             let item = store.recentTracks.prefix(5)[idx]
                     SongRow(track: item.track, library: item.library) {
-                        play(ref: item)
+                        play(ref: item, in: store.recentTracks)
                     }
                     if idx < min(4, store.recentTracks.count - 1) {
                         Divider().padding(.leading, 74)
@@ -257,10 +301,12 @@ struct HomeTabView: View {
         }
     }
 
-    private func play(ref: TrackRef) {
+    /// 播放列表里的某一首：整个列表一起进队列，播完自动往下走
+    private func play(ref: TrackRef, in list: [TrackRef]) {
         guard let provider = ProviderRegistry.provider(kind: ref.library.providerKind) else { return }
-        PlayerManager.shared.play(tracks: [ref.track.toTrack(kind: ref.library.providerKind)],
-                                  at: 0, provider: provider)
+        let tracks = list.map { $0.track.toTrack(kind: $0.library.providerKind) }
+        let idx = list.firstIndex { $0.id == ref.id } ?? 0
+        PlayerManager.shared.play(tracks: tracks, at: idx, provider: provider)
     }
 }
 
@@ -311,6 +357,12 @@ struct NowPlayingHomeCard: View {
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.8))
                             .lineLimit(1)
+                        if player.queue.count > 1 {
+                            Text("播放列表 \(player.currentIndex + 1)/\(player.queue.count)")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.6))
+                                .lineLimit(1)
+                        }
                     }
                     Spacer()
 

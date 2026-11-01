@@ -27,7 +27,7 @@ enum CloudKind: String, Codable, CaseIterable, Identifiable {
 }
 
 /// 云端文件/目录条目
-struct CloudFile: Identifiable, Hashable {
+struct CloudFile: Identifiable, Hashable, Codable {
     let id: String            // 网盘侧文件 ID（百度用 path 作为 id）
     let name: String
     let size: Int64
@@ -47,7 +47,7 @@ struct CloudFile: Identifiable, Hashable {
 }
 
 /// 一首待播放的曲目
-struct Track: Identifiable, Hashable {
+struct Track: Identifiable, Hashable, Codable {
     let id: String
     let file: CloudFile
     let providerKind: CloudKind

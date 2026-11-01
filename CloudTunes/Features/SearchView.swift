@@ -5,6 +5,7 @@ struct SearchView: View {
     @ObservedObject private var store = LibraryStore.shared
     @State private var query = ""
     @State private var showFavorites = false
+    @State private var showRecent = false
     @FocusState private var focused: Bool
 
     private var results: [TrackRef] { store.search(query) }
@@ -55,6 +56,9 @@ struct SearchView: View {
             .background(Theme.background)
             .navigationDestination(isPresented: $showFavorites) {
                 FavoritesView()
+            }
+            .navigationDestination(isPresented: $showRecent) {
+                RecentTracksView()
             }
         }
     }
@@ -110,10 +114,20 @@ struct SearchView: View {
                                                                               Color(red: 0.99, green: 0.58, blue: 0.42)])
                 }
                 .buttonStyle(.plain)
-                shortcut("最近播放", "\(store.recentIDs.count) 首", "clock.fill", [Color(red: 0.42, green: 0.55, blue: 0.98),
-                                                                          Color(red: 0.55, green: 0.45, blue: 0.95)])
-                shortcut("音乐库", "\(store.libraries.count) 个", "square.stack.fill", [Color(red: 0.30, green: 0.75, blue: 0.62),
-                                                                          Color(red: 0.28, green: 0.62, blue: 0.80)])
+                NavigationLink {
+                    RecentTracksView()
+                } label: {
+                    shortcut("最近播放", "\(store.recentIDs.count) 首", "clock.fill", [Color(red: 0.42, green: 0.55, blue: 0.98),
+                                                                              Color(red: 0.55, green: 0.45, blue: 0.95)])
+                }
+                .buttonStyle(.plain)
+                NavigationLink {
+                    AllTracksView()
+                } label: {
+                    shortcut("全部歌曲", "\(store.allTracks().count) 首", "music.note.list", [Color(red: 0.30, green: 0.75, blue: 0.62),
+                                                                              Color(red: 0.28, green: 0.62, blue: 0.80)])
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, Theme.pagePadding)
         }
@@ -190,7 +204,10 @@ struct SearchView: View {
 
     private var recentSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "最近播放")
+            SectionHeader(title: "最近播放",
+                          subtitle: "\(store.recentIDs.count) 首",
+                          actionTitle: "查看全部 ›",
+                          action: { showRecent = true })
             VStack(spacing: 0) {
                 ForEach(store.recentTracks.prefix(4).indices, id: \.self) { idx in
                             let item = store.recentTracks.prefix(4)[idx]
