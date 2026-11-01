@@ -28,12 +28,15 @@ struct PlayerView: View {
                         playNoteBanner
                     }
                     Spacer(minLength: 8)
-                    if showLyrics {
-                        lyricPanel
-                            .frame(maxHeight: .infinity)
-                    } else {
+                    // 封面 ↔ 歌词：左右滑动切换（第 0 页封面，第 1 页歌词）
+                    TabView(selection: $showLyrics) {
                         coverPanel(side: min(geo.size.width - 76, 330))
+                            .tag(false)
+                        lyricPanel
+                            .tag(true)
                     }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(maxHeight: .infinity)
                     Spacer(minLength: 8)
                     titleRow
                     progressSection
@@ -439,6 +442,8 @@ struct LyricScrollView: View {
     private var seekDrag: some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { v in
+                // 横向滑动是「封面/歌词」翻页手势，不参与歌词拖动
+                guard abs(v.translation.height) >= abs(v.translation.width) else { return }
                 if dragBaseIndex == nil {
                     dragBaseIndex = activeIndex() ?? 0
                     autoScroll = false
