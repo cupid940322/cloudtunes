@@ -161,6 +161,9 @@ final class PlayerManager: NSObject, ObservableObject {
             if let url = MetadataScraper.artworkURL(file: track.artworkFile),
                let image = UIImage(contentsOfFile: url.path) {
                 npArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            } else if let placeholder = Self.placeholderArtwork {
+                // 没封面时给一张品牌占位图：投送到 Apple TV / 锁屏时不会一片空白
+                npArtwork = MPMediaItemArtwork(boundsSize: placeholder.size) { _ in placeholder }
             }
         }
         if let npArtwork { info[MPMediaItemPropertyArtwork] = npArtwork }
@@ -169,8 +172,30 @@ final class PlayerManager: NSObject, ObservableObject {
         pushWidgetSnapshot(track: track)
     }
 
-    // MARK: - 桌面小组件同步
+    /// 没有刮削到封面时的占位图（600×600，品牌渐变 + 音符）
+    private static let placeholderArtwork: UIImage? = {
+        let size = CGSize(width: 600, height: 600)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { ctx in
+            let colors = [UIColor(red: 1.00, green: 0.50, blue: 0.46, alpha: 1).cgColor,
+                          UIColor(red: 1.00, green: 0.68, blue: 0.38, alpha: 1).cgColor]
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                         colors: colors as CFArray, locations: [0, 1]) {
+                ctx.cgContext.drawLinearGradient(gradient, start: .zero,
+                                                 end: CGPoint(x: size.width, y: size.height),
+                                                 options: [])
+            }
+            if let symbol = UIImage(systemName: "music.note")?
+                .withTintColor(.white.withAlphaComponent(0.92), renderingMode: .alwaysOriginal) {
+                let side: CGFloat = 260
+                symbol.draw(in: CGRect(x: (size.width - side) / 2,
+                                       y: (size.height - side) / 2,
+                                       width: side, height: side))
+            }
+        }
+    }()
 
+    // MARK: - 桌面小组件同步
     private var widgetCoverKey: String?
     private var widgetLastSignature = ""
 

@@ -4,7 +4,10 @@ import SwiftUI
 struct PlayerView: View {
     @ObservedObject private var player = PlayerManager.shared
     @ObservedObject private var store = LibraryStore.shared
+    @ObservedObject private var route = AudioRouteMonitor.shared
     @Environment(\.dismiss) private var dismiss
+
+    @State private var hideAirPlayHint = false
 
     @State private var showLyrics = false
     @State private var showLyricSearch = false
@@ -26,6 +29,9 @@ struct PlayerView: View {
                     topBar
                     if !player.playNote.isEmpty {
                         playNoteBanner
+                    }
+                    if route.isAirPlay, !hideAirPlayHint {
+                        airPlayHint
                     }
                     Spacer(minLength: 8)
                     // 封面 ↔ 歌词：左右滑动切换（第 0 页封面，第 1 页歌词）
@@ -156,8 +162,38 @@ struct PlayerView: View {
         .padding(.top, 8)
     }
 
-    // MARK: 封面
+    /// AirPlay 只传音频，电视上不会有歌词 —— 首次投送时给个说明，可手动关掉
+    private var airPlayHint: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "airplayaudio")
+                .font(.caption)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(route.outputName.isEmpty ? "已通过 AirPlay 投送音频" : "已投送到「\(route.outputName)」")
+                    .font(.caption2.weight(.semibold))
+                Text("AirPlay 只传声音，电视上不会有封面和歌词。想看封面和歌词，请在控制中心用「屏幕镜像」。")
+                    .font(.caption2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { hideAirPlayHint = true }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .padding(4)
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(.white.opacity(0.9))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.top, 8)
+    }
 
+    // MARK: 封面
     private func coverPanel(side: CGFloat) -> some View {        VStack {
             Spacer(minLength: 0)
             CoverView(file: track?.artworkFile, size: side, corner: 22, showsShadow: true)
