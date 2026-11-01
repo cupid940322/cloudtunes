@@ -113,6 +113,10 @@ struct PlayerView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.85))
             Spacer()
+            // AirPlay：直接选 Apple TV / HomePod 等输出设备
+            AirPlayRouteButton()
+                .frame(width: 30, height: 30)
+                .padding(.trailing, 8)
             Button {
                 showEdit = true
             } label: {
