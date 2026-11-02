@@ -2,8 +2,13 @@ import Foundation
 
 /// 在线音乐元数据/封面搜索。
 ///
-/// 关键改动：结果不再「取第一条」，而是把候选全部打分，只有超过阈值才采纳。
+/// 关键改动 1：结果不再「取第一条」，而是把候选全部打分，只有超过阈值才采纳。
 /// 宁可没有封面，也不要错封面——这是「刮削错误率高」的主要成因。
+///
+/// 关键改动 2（v1.16）：原来是「网易云优先，网易云不行才查 QQ」。
+/// 但网易云丢了大厂版权（周杰伦、部分华语专辑），搜「说走就走」只能搜到陶喆的同名歌，
+/// 于是直接判为无结果。现在改为 **网易云 + QQ音乐 + iTunes 三源并发**，
+/// 候选合并去重后统一打分选最优——哪个库有就用哪个。
 enum MusicSearchService {
 
     struct SongInfo {
@@ -13,6 +18,8 @@ enum MusicSearchService {
         var coverURL: String?
         var neteaseID: Int?
         var duration: Double?
+        /// 来源标签：网易云 / QQ音乐 / iTunes（手动匹配时展示，方便判断可信度）
+        var source: String = ""
     }
 
     /// 带置信度的匹配结果
@@ -57,7 +64,8 @@ enum MusicSearchService {
                             album: album?["name"] as? String,
                             coverURL: pic,
                             neteaseID: s["id"] as? Int,
-                            duration: ms.map { $0 / 1000 })
+                            duration: ms.map { $0 / 1000 },
+                            source: "网易云")
         }
     }
 
@@ -87,7 +95,8 @@ enum MusicSearchService {
                         album: al?["name"] as? String,
                         coverURL: pic,
                         neteaseID: id,
-                        duration: ms.map { $0 / 1000 })
+                        duration: ms.map { $0 / 1000 },
+                        source: "网易云")
     }
 
     /// 网易云歌词（LRC 格式）
@@ -146,14 +155,59 @@ enum MusicSearchService {
             if let mid = albumMid, !mid.isEmpty {
                 cover = "https://y.qq.com/music/photo_new/T002R500x500M000\(mid).jpg"
             }
+            var duration: Double?
+            if let sec = item["interval"] as? Double, sec > 0 {
+                duration = sec
+            } else if let sec = item["interval"] as? Int, sec > 0 {
+                duration = Double(sec)
+            }
             return SongInfo(title: title, artist: artistName, album: albumName,
-                            coverURL: cover, neteaseID: nil, duration: nil)
+                            coverURL: cover, neteaseID: nil, duration: duration,
+                            source: "QQ音乐")
         }
     }
 
     /// 兼容旧调用
     static func qqCover(title: String, artist: String?) async -> String? {
         await qqSearch(keyword: keyword(title: title, artist: artist), limit: 3).first?.coverURL
+    }
+
+    // MARK: - iTunes（欧美 / 外语专辑的封面最全，补网易云与 QQ 的缺口）
+
+    static func itunesSearch(keyword: String, limit: Int = 8) async -> [SongInfo] {
+        let kw = keyword.trimmingCharacters(in: .whitespaces)
+        guard !kw.isEmpty else { return [] }
+        var comps = URLComponents(string: "https://itunes.apple.com/search")!
+        comps.queryItems = [
+            .init(name: "term", value: kw),
+            .init(name: "media", value: "music"),
+            .init(name: "entity", value: "song"),
+            .init(name: "limit", value: "\(limit)"),
+        ]
+        guard let url = comps.url else { return [] }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = obj["results"] as? [[String: Any]] else { return [] }
+
+        return results.compactMap { r in
+            guard let name = r["trackName"] as? String else { return nil }
+            var cover: String?
+            if let art = r["artworkUrl100"] as? String {
+                // 100×100 换成 600×600，直接拿到大图
+                cover = art.replacingOccurrences(of: "100x100", with: "600x600")
+            }
+            var duration: Double?
+            if let ms = r["trackTimeMillis"] as? Double, ms > 0 { duration = ms / 1000 }
+            return SongInfo(title: name,
+                            artist: r["artistName"] as? String,
+                            album: r["collectionName"] as? String,
+                            coverURL: cover,
+                            neteaseID: nil,
+                            duration: duration,
+                            source: "iTunes")
+        }
     }
 
     // MARK: - 打分匹配
@@ -166,29 +220,46 @@ enum MusicSearchService {
         return "\(a) \(t)"
     }
 
-    /// 组装多个搜索词（先用「歌手 + 歌名」，不够再只用歌名）
-    private static func queryVariants(title: String, artist: String?) -> [String] {
-        var list: [String] = []
+    /// 收集候选：网易云 + QQ音乐 + iTunes **三源并发**，合并去重。
+    /// 之前只查网易云，周杰伦这类网易云没有版权的歌就永远搜不到。
+    static func candidates(title: String, artist: String?, limit: Int = 12) async -> [SongInfo] {
         let kw = keyword(title: title, artist: artist)
-        if !kw.isEmpty { list.append(kw) }
         let plain = title.trimmingCharacters(in: .whitespaces)
-        if !plain.isEmpty, !list.contains(plain) { list.append(plain) }
-        return list
+        guard !kw.isEmpty else { return [] }
+
+        var pool: [SongInfo] = []
+        await withTaskGroup(of: [SongInfo].self) { group in
+            group.addTask { await search(keyword: kw, limit: limit) }        // 网易云
+            if plain != kw {
+                group.addTask { await search(keyword: plain, limit: limit) } // 网易云（只留歌名再试一次）
+            }
+            group.addTask { await qqSearch(keyword: kw, limit: limit) }      // QQ音乐
+            group.addTask { await itunesSearch(keyword: kw, limit: 8) }      // iTunes
+            for await list in group { pool.append(contentsOf: list) }
+        }
+
+        // 去重：同来源下「歌名 + 歌手」相同的只留一条
+        var seen = Set<String>()
+        var unique: [SongInfo] = []
+        for s in pool {
+            guard let t = s.title, !t.isEmpty else { continue }
+            let key = "\(s.source)|\(t)|\(s.artist ?? "")".lowercased()
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            unique.append(s)
+        }
+        return unique
     }
 
-    /// 收集候选（去重）
-    static func candidates(title: String, artist: String?, limit: Int = 8) async -> [SongInfo] {
-        var pool: [SongInfo] = []
-        var seen = Set<Int>()
-        for q in queryVariants(title: title, artist: artist) {
-            for s in await search(keyword: q, limit: limit) {
-                guard let id = s.neteaseID, !seen.contains(id) else { continue }
-                seen.insert(id)
-                pool.append(s)
-            }
-            if pool.count >= limit { break }
-        }
+    /// 手动匹配用：多源候选按置信度从高到低排序，并丢掉明显不相关的
+    static func rankedCandidates(title: String, artist: String?) async -> [SongInfo] {
+        let pool = await candidates(title: title, artist: artist)
+        guard !pool.isEmpty else { return [] }
         return pool
+            .map { (info: $0, s: score(candidate: $0, title: title, artist: artist)) }
+            .filter { $0.s >= 0.30 }
+            .sorted { $0.s > $1.s }
+            .map { $0.info }
     }
 
     /// 给候选打分：标题占大头，艺术家占小头。没有艺术家信息时略微降权并抬高阈值。
@@ -196,53 +267,98 @@ enum MusicSearchService {
         let tSim = TextMatch.similarity(title, candidate.title ?? "")
         if tSim < 0.45 { return tSim * 0.5 }
 
-        guard let artist, !artist.isEmpty,
-              let cArtist = candidate.artist, !cArtist.isEmpty else {
-            return tSim * 0.9
+        let base: Double
+        if let artist, !artist.isEmpty,
+           let cArtist = candidate.artist, !cArtist.isEmpty {
+            let aSim = cArtist
+                .components(separatedBy: CharacterSet(charactersIn: "/、,&;；"))
+                .map { TextMatch.similarity(artist, $0.trimmingCharacters(in: .whitespaces)) }
+                .max() ?? 0
+            base = tSim * 0.66 + aSim * 0.34
+        } else {
+            base = tSim * 0.9
         }
-        let aSim = cArtist
-            .components(separatedBy: CharacterSet(charactersIn: "/、,&;；"))
-            .map { TextMatch.similarity(artist, $0.trimmingCharacters(in: .whitespaces)) }
-            .max() ?? 0
-        return tSim * 0.66 + aSim * 0.34
+
+        // 同名情况下优先录音室版：Live / 伴奏 / 翻唱 / 网友自制 轻微降权
+        return isAlternateVersion(candidate.title) ? base * 0.94 : base
     }
 
-    /// 统一入口：返回分数最高且过阈值的一条；没有可信结果时返回 nil
+    /// 是否是 Live / 伴奏 / 翻唱之类的非原版
+    private static func isAlternateVersion(_ title: String?) -> Bool {
+        let lower = (title ?? "").lowercased()
+        for token in ["live", "现场", "演唱会", "伴奏", "翻唱", "cover", "karaoke",
+                      "remix", "dj版", "网友自制", "翻自", "纯音乐", "instrumental"] {
+            if lower.contains(token) { return true }
+        }
+        return false
+    }
+
+    /// 统一入口：多源候选统一打分，返回分数最高且过阈值的一条；没有可信结果时返回 nil。
+    /// 注意：不再「网易云优先」——那样网易云没有版权的歌（如周杰伦）会被同名别人的版本顶掉，
+    /// 或者直接判为无结果。现在是谁的分高用谁。
+    ///
+    /// 分两轮是为了控制整库重刮时的请求量：
+    /// 第一轮只打网易云 + QQ（覆盖绝大多数华语/流行），分数够就直接收工；
+    /// 不够才补 iTunes + 只用歌名的网易云。
     static func bestMatch(title: String, artist: String?, minScore: Double? = nil) async -> Match? {
         let cleanTitle = title.trimmingCharacters(in: .whitespaces)
         guard !cleanTitle.isEmpty else { return nil }
 
-        let pool = await candidates(title: cleanTitle, artist: artist)
+        let kw = keyword(title: cleanTitle, artist: artist)
+        let plain = cleanTitle
         let hasArtist = !(artist ?? "").trimmingCharacters(in: .whitespaces).isEmpty
-        let threshold = minScore ?? (hasArtist ? 0.66 : 0.78)
+        // 有歌手信息时阈值 0.70：正好卡住「歌名一模一样但根本不是同一个人」的版本
+        // （那种只有 0.66 分），又不至于把 Live / 重新编曲版全部拒掉。
+        let threshold = minScore ?? (hasArtist ? 0.70 : 0.78)
 
+        // 第一轮：网易云 + QQ音乐
+        var pool: [SongInfo] = []
+        await withTaskGroup(of: [SongInfo].self) { group in
+            group.addTask { await search(keyword: kw, limit: 10) }
+            group.addTask { await qqSearch(keyword: kw, limit: 10) }
+            for await list in group { pool.append(contentsOf: list) }
+        }
+        var best = pickBest(pool, title: cleanTitle, artist: artist)
+
+        // 第二轮：分数不够，再用 iTunes 和「只留歌名」的网易云兜一次
+        if (best?.score ?? 0) < threshold {
+            var second: [SongInfo] = []
+            await withTaskGroup(of: [SongInfo].self) { group in
+                group.addTask { await itunesSearch(keyword: kw, limit: 8) }
+                if plain != kw {
+                    group.addTask { await search(keyword: plain, limit: 10) }
+                }
+                for await list in group { second.append(contentsOf: list) }
+            }
+            if let alt = pickBest(second, title: cleanTitle, artist: artist),
+               alt.score > (best?.score ?? 0) {
+                best = alt
+            }
+        }
+
+        guard var b = best, b.score >= threshold else { return nil }
+
+        // 网易云命中但字段不全时补全封面 / 专辑 / 时长（搜索接口给的信息比详情少）
+        if let id = b.info.neteaseID, (b.info.coverURL ?? "").isEmpty {
+            if let detail = await neteaseDetail(id: id) {
+                if let c = detail.coverURL, !c.isEmpty { b.info.coverURL = c }
+                if (b.info.album ?? "").isEmpty, let a = detail.album, !a.isEmpty { b.info.album = a }
+                if (b.info.artist ?? "").isEmpty, let ar = detail.artist, !ar.isEmpty { b.info.artist = ar }
+                if b.info.duration == nil { b.info.duration = detail.duration }
+            }
+        }
+        return b
+    }
+
+    private static func pickBest(_ pool: [SongInfo], title: String, artist: String?) -> Match? {
         var best: Match?
         for c in pool {
-            let s = score(candidate: c, title: cleanTitle, artist: artist)
+            let s = score(candidate: c, title: title, artist: artist)
             if s > (best?.score ?? 0) {
                 best = Match(info: c, score: s)
             }
         }
-
-        if var b = best, b.score >= threshold, let id = b.info.neteaseID {
-            // 补全封面/专辑（搜索接口给的字段不全）
-            if let detail = await neteaseDetail(id: id) {
-                if let c = detail.coverURL, !c.isEmpty { b.info.coverURL = c }
-                if let a = detail.album, !a.isEmpty { b.info.album = a }
-                if let ar = detail.artist, !ar.isEmpty { b.info.artist = ar }
-                if let d = detail.duration { b.info.duration = d }
-            }
-            return b
-        }
-
-        // 网易云没有可信结果时，再用 QQ 音乐候选打一次分（同样要过阈值）
-        var qqBest: Match?
-        for c in await qqSearch(keyword: keyword(title: cleanTitle, artist: artist), limit: 6) {
-            let s = score(candidate: c, title: cleanTitle, artist: artist)
-            if s > (qqBest?.score ?? 0) { qqBest = Match(info: c, score: s) }
-        }
-        if let q = qqBest, q.score >= threshold { return q }
-        return nil
+        return best
     }
 
     /// 直接下载封面图片数据

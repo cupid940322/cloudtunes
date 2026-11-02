@@ -1056,7 +1056,7 @@ struct EditTrackSheet: View {
                         HStack {
                             if searching { ProgressView().scaleEffect(0.8).tint(.white) }
                             else { Image(systemName: "wand.and.stars") }
-                            Text(searching ? "正在搜索…" : "在线重新匹配")
+                            Text(searching ? "正在搜索 3 个库…" : "在线重新匹配")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -1097,6 +1097,19 @@ struct EditTrackSheet: View {
                                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                             }
                                             Spacer()
+                                            if !c.source.isEmpty {
+                                                Text(c.source)
+                                                    .font(.system(size: 9, weight: .semibold))
+                                                    .foregroundStyle(.secondary)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(Theme.surfaceElevated, in: Capsule())
+                                            }
+                                            if (c.coverURL ?? "").isEmpty {
+                                                Image(systemName: "photo.badge.exclamationmark")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.tertiary)
+                                            }
                                             Image(systemName: "arrow.down.circle")
                                                 .foregroundStyle(Theme.accent)
                                         }
@@ -1159,7 +1172,9 @@ struct EditTrackSheet: View {
             await MainActor.run {
                 candidates = list
                 searching = false
-                if list.isEmpty { message = "没有找到匹配结果，试试把歌名改短一些" }
+                if list.isEmpty {
+                    message = "网易云 / QQ音乐 / iTunes 都没找到，试试把歌名改短、或在「艺术家」里补上歌手再搜"
+                }
             }
         }
     }

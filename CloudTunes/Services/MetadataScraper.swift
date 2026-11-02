@@ -136,9 +136,9 @@ enum MetadataScraper {
         return result
     }
 
-    /// 手动匹配用：只搜在线，不读文件
+    /// 手动匹配用：多源（网易云 / QQ音乐 / iTunes）聚合，按置信度排序
     static func searchCandidates(title: String, artist: String?) async -> [MusicSearchService.SongInfo] {
-        await MusicSearchService.candidates(title: title, artist: artist, limit: 10)
+        await MusicSearchService.rankedCandidates(title: title, artist: artist)
     }
 
     // MARK: - 封面缓存
