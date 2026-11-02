@@ -84,19 +84,26 @@ enum MetadataScraper {
 
             if let match {
                 let info = match.info
-                result.matched = true
-                result.confidence = match.score
-                result.neteaseID = info.neteaseID
+                // iTunes 只信它的封面：它的中文库里同名翻唱/改编太多，
+                // 拿它改歌名歌手反而会把对的改错。
+                let coverOnly = (info.source == "iTunes")
+                if !coverOnly {
+                    result.matched = true
+                    result.confidence = match.score
+                    result.neteaseID = info.neteaseID
+                }
 
-                if (result.album?.isEmpty ?? true), let a = info.album, !a.isEmpty {
+                if coverOnly {
+                    // nothing：文字信息一律不动
+                } else if (result.album?.isEmpty ?? true), let a = info.album, !a.isEmpty {
                     result.album = a
                 }
 
                 if didSwap, match.score >= 0.75 {
                     // 倒序文件名：以在线结果为准，整条纠正过来
-                    if let t = info.title, !t.isEmpty { result.title = t }
-                    if let a = info.artist, !a.isEmpty { result.artist = a }
-                } else {
+                    if !coverOnly, let t = info.title, !t.isEmpty { result.title = t }
+                    if !coverOnly, let a = info.artist, !a.isEmpty { result.artist = a }
+                } else if !coverOnly {
                     // 艺术家：内嵌有值绝不覆盖
                     if embeddedArtist?.isEmpty ?? true {
                         if let ar = info.artist, !ar.isEmpty {

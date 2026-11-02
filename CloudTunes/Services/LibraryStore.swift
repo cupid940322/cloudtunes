@@ -215,6 +215,9 @@ final class LibraryStore: ObservableObject {
 
         if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
             for i in libraries[idx].tracks.indices {
+                // 手动改过/手动匹配过的歌不动：用户的选择优先于自动匹配，
+                // 否则重新刮削会把辛苦修好的信息又冲掉。
+                if libraries[idx].tracks[i].metaSource == "manual" { continue }
                 let t = libraries[idx].tracks[i]
                 let parsed = MusicScanner.parse(t.fileName)
                 libraries[idx].tracks[i].title = parsed.title
@@ -229,6 +232,31 @@ final class LibraryStore: ObservableObject {
                 libraries[idx].tracks[i].confidence = nil
                 libraries[idx].tracks[i].metaSource = "filename"
                 libraries[idx].tracks[i].neteaseID = nil
+            }
+        }
+        save()
+        await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
+        progress[libraryID] = nil
+    }
+
+    /// 只补缺失：不动已有的歌名/歌手，只处理和在线补齐「没封面 / 没专辑 / 之前只有文件名」的歌。
+    /// 比整库重刮安全得多——重刮会按文件名把现有信息全部重置，一次不理想的匹配就会把对的改错。
+    func fillMissing(libraryID: String) async {
+        guard let lib = library(id: libraryID) else { return }
+        progress[libraryID] = ScanProgress(phase: "检查缺失信息…")
+        BackgroundKeepAlive.shared.begin()
+        defer { BackgroundKeepAlive.shared.end() }
+
+        if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
+            for i in libraries[idx].tracks.indices {
+                let t = libraries[idx].tracks[i]
+                // 手动改过的绝不碰
+                if t.metaSource == "manual" { continue }
+                let needy = (t.artworkFile ?? "").isEmpty
+                    || (t.album ?? "").isEmpty
+                    || (t.artist ?? "").isEmpty
+                    || t.metaSource == "filename"
+                libraries[idx].tracks[i].scraped = !needy
             }
         }
         save()

@@ -293,13 +293,16 @@ enum MusicSearchService {
         return false
     }
 
-    /// 统一入口：多源候选统一打分，返回分数最高且过阈值的一条；没有可信结果时返回 nil。
-    /// 注意：不再「网易云优先」——那样网易云没有版权的歌（如周杰伦）会被同名别人的版本顶掉，
-    /// 或者直接判为无结果。现在是谁的分高用谁。
+    /// 统一入口：按「主源优先、逐级补充」的顺序取最可信的一条。
     ///
-    /// 分两轮是为了控制整库重刮时的请求量：
-    /// 第一轮只打网易云 + QQ（覆盖绝大多数华语/流行），分数够就直接收工；
-    /// 不够才补 iTunes + 只用歌名的网易云。
+    /// 为什么不把所有源混在一起按分数排：
+    /// 网易云和 QQ 同名同歌手的两条都是 1.0 分，混排时谁先到谁赢，
+    /// 于是 QQ 的《精选集》封面会把网易云的原版专辑顶掉——重刮整库时错误反而变多。
+    /// 现在的顺序是：
+    ///   ① 网易云（曲库信息最规范，专辑/封面基本都是原版）
+    ///   ② 网易云没有可信结果 → QQ音乐（补大厂版权，如周杰伦）
+    ///   ③ 还没有 → iTunes（补欧美/外语专辑封面）
+    /// 任何一级达标就收工，次源只在主源确实没有时出场。
     static func bestMatch(title: String, artist: String?, minScore: Double? = nil) async -> Match? {
         let cleanTitle = title.trimmingCharacters(in: .whitespaces)
         guard !cleanTitle.isEmpty else { return nil }
@@ -311,26 +314,34 @@ enum MusicSearchService {
         // （那种只有 0.66 分），又不至于把 Live / 重新编曲版全部拒掉。
         let threshold = minScore ?? (hasArtist ? 0.70 : 0.78)
 
-        // 第一轮：网易云 + QQ音乐
-        var pool: [SongInfo] = []
-        await withTaskGroup(of: [SongInfo].self) { group in
-            group.addTask { await search(keyword: kw, limit: 10) }
-            group.addTask { await qqSearch(keyword: kw, limit: 10) }
-            for await list in group { pool.append(contentsOf: list) }
-        }
-        var best = pickBest(pool, title: cleanTitle, artist: artist)
+        func acceptable(_ m: Match?) -> Bool { (m?.score ?? 0) >= threshold }
 
-        // 第二轮：分数不够，再用 iTunes 和「只留歌名」的网易云兜一次
-        if (best?.score ?? 0) < threshold {
-            var second: [SongInfo] = []
-            await withTaskGroup(of: [SongInfo].self) { group in
-                group.addTask { await itunesSearch(keyword: kw, limit: 8) }
-                if plain != kw {
-                    group.addTask { await search(keyword: plain, limit: 10) }
-                }
-                for await list in group { second.append(contentsOf: list) }
+        // ① 网易云：先「歌手 + 歌名」，还不行再只用歌名
+        var best = pickBest(await search(keyword: kw, limit: 10), title: cleanTitle, artist: artist)
+        if !acceptable(best), plain != kw {
+            if let alt = pickBest(await search(keyword: plain, limit: 10),
+                                  title: cleanTitle, artist: artist),
+               alt.score > (best?.score ?? 0) {
+                best = alt
             }
-            if let alt = pickBest(second, title: cleanTitle, artist: artist),
+        }
+
+        // ② QQ 音乐兜底（网易云丢了大厂版权时才走到这里）
+        if !acceptable(best) {
+            var pool = await qqSearch(keyword: kw, limit: 10)
+            if pool.isEmpty, plain != kw {
+                pool += await qqSearch(keyword: plain, limit: 10)
+            }
+            if let alt = pickBest(pool, title: cleanTitle, artist: artist),
+               alt.score > (best?.score ?? 0) {
+                best = alt
+            }
+        }
+
+        // ③ iTunes 最后兜一次（欧美/外语专辑封面最全）
+        if !acceptable(best) {
+            if let alt = pickBest(await itunesSearch(keyword: kw, limit: 8),
+                                  title: cleanTitle, artist: artist),
                alt.score > (best?.score ?? 0) {
                 best = alt
             }

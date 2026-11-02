@@ -540,8 +540,11 @@ struct LibraryDetailView: View {
                 }
             }
         }
-        .confirmationDialog("重新刮削会按文件名重新匹配全部歌曲，可能耗时较久", isPresented: $confirmRescrape) {
-            Button("开始重新刮削", role: .destructive) {
+        .confirmationDialog("「全部重新刮削」会按文件名重新匹配并覆盖现有信息；「只补缺失」不会动已有的歌名和歌手", isPresented: $confirmRescrape) {
+            Button("只补缺失的封面 / 专辑") {
+                Task { await store.fillMissing(libraryID: libraryID) }
+            }
+            Button("全部重新刮削（覆盖现有信息）", role: .destructive) {
                 Task { await store.rescrapeAll(libraryID: libraryID) }
             }
             Button("取消", role: .cancel) {}
