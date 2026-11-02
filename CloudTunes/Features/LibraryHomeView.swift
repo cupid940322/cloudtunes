@@ -317,11 +317,6 @@ struct NowPlayingHomeCard: View {
     let track: Track
     @ObservedObject private var player = PlayerManager.shared
 
-    private var progress: Double {
-        guard player.duration > 0 else { return 0 }
-        return max(0, min(1, player.currentTime / player.duration))
-    }
-
     var body: some View {
         Button {
             AppUIState.shared.showPlayer = true
@@ -379,22 +374,9 @@ struct NowPlayingHomeCard: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 14)
-                .padding(.bottom, player.duration > 0 ? 10 : 14)
+                .padding(.bottom, 14)
 
-                if player.duration > 0 {
-                    VStack(alignment: .leading, spacing: 5) {
-                        ThinProgressBar(value: progress, height: 3)
-                        HStack {
-                            Text(player.currentTime.formattedTime)
-                            Spacer()
-                            Text(player.duration.formattedTime)
-                        }
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.7))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 12)
-                }
+                HomeProgressBlock()
             }
             .background {
                 LinearGradient(colors: [Color(red: 0.32, green: 0.26, blue: 0.42),
@@ -421,6 +403,29 @@ struct NowPlayingHomeCard: View {
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.25), value: track.id)
         .padding(.horizontal, Theme.pagePadding)
+    }
+}
+
+/// 首页卡片的进度条 + 时间：独立订阅进度时钟。
+/// 不放在 `NowPlayingHomeCard` 里，是为了让整张卡片（含模糊封面背景）不要每 0.25 秒重绘一次。
+private struct HomeProgressBlock: View {
+    @ObservedObject private var clock = PlayerManager.shared.clock
+
+    var body: some View {
+        if clock.duration > 0 {
+            VStack(alignment: .leading, spacing: 5) {
+                ThinProgressBar(value: clock.fraction, height: 3)
+                HStack {
+                    Text(clock.time.formattedTime)
+                    Spacer()
+                    Text(clock.duration.formattedTime)
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.7))
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+        }
     }
 }
 

@@ -6,19 +6,33 @@ import UIKit
 final class ArtworkCache {
     static let shared = ArtworkCache()
     private let cache = NSCache<NSString, UIImage>()
+    /// 「这个文件没有封面」的负缓存。NSCache 存不了 nil，
+    /// 以前没有封面时会每次重绘都去磁盘试读一次（列表里有上百首无封面的歌时很吃 IO）。
+    private let missing = NSCache<NSString, NSString>()
 
     private init() {
         cache.countLimit = 300
+        missing.countLimit = 400
     }
 
     func image(named: String?, target: CGFloat) -> UIImage? {
         guard let named, !named.isEmpty else { return nil }
         let pixelKey = "\(named)@\(Int(target))" as NSString
         if let img = cache.object(forKey: pixelKey) { return img }
+        // 无封面：直接返回占位，不再读盘
+        if missing.object(forKey: pixelKey) != nil { return nil }
         guard let url = MetadataScraper.artworkURL(file: named),
-              let img = downsample(url: url, maxPixel: target * UIScreen.main.scale) else { return nil }
+              let img = downsample(url: url, maxPixel: target * UIScreen.main.scale) else {
+            missing.setObject("1" as NSString, forKey: pixelKey)
+            return nil
+        }
         cache.setObject(img, forKey: pixelKey)
         return img
+    }
+
+    /// 有新封面落盘后调用，让「没有封面」的负缓存失效
+    func clearMissing() {
+        missing.removeAllObjects()
     }
 
     private func downsample(url: URL, maxPixel: CGFloat) -> UIImage? {
@@ -43,6 +57,16 @@ struct CoverView: View {
     var showsShadow = false
 
     var body: some View {
+        // 不需要阴影时干脆不加 .shadow —— 即使 color 是 .clear，
+        // 长列表里每一行都挂一层阴影离屏合成，滚动时仍然要花 GPU。
+        if showsShadow {
+            core.shadow(color: Theme.shadow(0.18), radius: 14, x: 0, y: 7)
+        } else {
+            core
+        }
+    }
+
+    private var core: some View {
         content
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
@@ -50,9 +74,6 @@ struct CoverView: View {
                 RoundedRectangle(cornerRadius: corner, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
             )
-            .shadow(color: showsShadow ? Theme.shadow(0.18) : .clear,
-                    radius: showsShadow ? 14 : 0,
-                    x: 0, y: showsShadow ? 7 : 0)
     }
 
     @ViewBuilder

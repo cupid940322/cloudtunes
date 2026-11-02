@@ -61,10 +61,9 @@ struct MiniPlayerBar: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 7)
 
-                    ThinProgressBar(value: progress, height: 2.5)
+                    MiniProgressLine()
                         .padding(.horizontal, 16)
                         .padding(.bottom, 5)
-                        .opacity(player.duration > 0 ? 1 : 0)
                 }
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(
@@ -76,9 +75,16 @@ struct MiniPlayerBar: View {
             .buttonStyle(.plain)
         }
     }
+}
 
-    private var progress: Double {
-        guard player.duration > 0 else { return 0 }
-        return max(0, min(1, player.currentTime / player.duration))
+/// 迷你播放条的进度线：独立订阅进度时钟。
+/// 拆出来的意义在于——胶囊外壳用了 `.regularMaterial`（毛玻璃），
+/// 如果整个播放条跟着 0.25 秒一跳地重绘，毛玻璃每秒要重新合成 4 次，滑动界面时非常吃 GPU。
+private struct MiniProgressLine: View {
+    @ObservedObject private var clock = PlayerManager.shared.clock
+
+    var body: some View {
+        ThinProgressBar(value: clock.fraction, height: 2.5)
+            .opacity(clock.duration > 0 ? 1 : 0)
     }
 }

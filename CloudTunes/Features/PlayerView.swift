@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// 全屏播放页：封面模糊背景 + 大封面 / 歌词切换 + 随机循环
@@ -13,8 +14,6 @@ struct PlayerView: View {
     @State private var showLyricSearch = false
     @State private var showQueue = false
     @State private var showEdit = false
-    @State private var dragValue: Double = 0
-    @State private var isDragging = false
 
     private var track: Track? { player.currentTrack }
     private var artwork: UIImage? {
@@ -45,7 +44,7 @@ struct PlayerView: View {
                     .frame(maxHeight: .infinity)
                     Spacer(minLength: 8)
                     titleRow
-                    progressSection
+                    PlayerProgressSection()
                     controlRow
                     bottomBar
                 }
@@ -266,32 +265,7 @@ struct PlayerView: View {
     }
 
     // MARK: 进度
-
-    private var progressSection: some View {
-        VStack(spacing: 6) {
-            Slider(
-                value: Binding(
-                    get: { isDragging ? dragValue : player.currentTime },
-                    set: { dragValue = $0 }
-                ),
-                in: 0...max(player.duration, 1),
-                onEditingChanged: { editing in
-                    isDragging = editing
-                    if !editing { player.seek(to: dragValue) }
-                }
-            )
-            .tint(.white)
-
-            HStack {
-                Text((isDragging ? dragValue : player.currentTime).formattedTime)
-                Spacer()
-                Text(player.duration.formattedTime)
-            }
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.6))
-        }
-        .padding(.bottom, 12)
-    }
+    // 进度条已抽成 PlayerProgressSection（独立订阅进度时钟），此页不再每 0.25 秒整体重绘
 
     // MARK: 控制
 
@@ -392,6 +366,47 @@ struct PlayerView: View {
     }
 }
 
+// MARK: - 进度条
+
+/// 播放页的进度条 + 时间。独立订阅进度时钟，
+/// 这样 0.25 秒一次的刷新不会把整个播放页（含歌词列表、模糊封面背景）拖着一起重绘。
+private struct PlayerProgressSection: View {
+    @ObservedObject private var clock = PlayerManager.shared.clock
+    @State private var dragValue: Double = 0
+    @State private var isDragging = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Slider(
+                value: Binding(
+                    get: { isDragging ? dragValue : clock.time },
+                    set: { dragValue = $0 }
+                ),
+                in: 0...max(clock.duration, 1),
+                onEditingChanged: { editing in
+                    if editing {
+                        dragValue = clock.time
+                        isDragging = true
+                    } else {
+                        isDragging = false
+                        PlayerManager.shared.seek(to: dragValue)
+                    }
+                }
+            )
+            .tint(.white)
+
+            HStack {
+                Text((isDragging ? dragValue : clock.time).formattedTime)
+                Spacer()
+                Text(clock.duration.formattedTime)
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.6))
+        }
+        .padding(.bottom, 12)
+    }
+}
+
 // MARK: - 歌词滚动
 
 struct LyricScrollView: View {
@@ -399,6 +414,10 @@ struct LyricScrollView: View {
     @State private var autoScroll = true
     @State private var dragBaseIndex: Int? = nil
     @State private var seekTargetIndex: Int? = nil
+    /// 当前高亮行（每次刷新只算一次，不再每行都遍历一遍歌词）
+    @State private var activeID: Int?
+    /// 已经滚动过去的行，避免同一个位置反复发起滚动动画
+    @State private var lastScrolledID: Int?
     /// 拖动换算：一行歌词大约占的高度
     private let rowHeight: CGFloat = 44
 
@@ -411,6 +430,11 @@ struct LyricScrollView: View {
             } else {
                 syncedView
             }
+        }
+        .onAppear { activeID = activeIndex(at: PlayerManager.shared.clock.time) }
+        .onChange(of: player.lyricLines.count) { _ in
+            activeID = activeIndex(at: PlayerManager.shared.clock.time)
+            lastScrolledID = nil
         }
     }
 
@@ -448,7 +472,7 @@ struct LyricScrollView: View {
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 16) {
                     ForEach(player.lyricLines) { line in
-                        lineView(line)
+                        lineView(line, isActive: line.id == activeID)
                     }
                 }
                 .padding(.vertical, 80)
@@ -456,15 +480,16 @@ struct LyricScrollView: View {
             .mask(fadeMask)
             .simultaneousGesture(seekDrag)
             .overlay { seekHint }
-            .onChange(of: player.currentTime) { _ in
-                handleTick(proxy: proxy)
+            // 用 onReceive 订阅时间流：视图本身不观察时钟，
+            // 所以不会每 0.25 秒把整列歌词重新求值一遍，只有「当前行」变了才刷新。
+            .onReceive(PlayerManager.shared.clock.$time) { t in
+                handleTick(proxy: proxy, time: t)
             }
         }
     }
 
-    private func lineView(_ line: LyricLine) -> some View {
-        let isActive: Bool = active(line)
-        return Text(line.text.isEmpty ? " " : line.text)
+    private func lineView(_ line: LyricLine, isActive: Bool) -> some View {
+        Text(line.text.isEmpty ? " " : line.text)
             .font(isActive ? Font.title3.weight(.semibold) : Font.body)
             .foregroundStyle(isActive ? Color.white : Color.white.opacity(0.38))
             .multilineTextAlignment(.center)
@@ -475,6 +500,7 @@ struct LyricScrollView: View {
                 guard line.time >= 0 else { return }
                 player.seek(to: line.time)
                 autoScroll = true
+                lastScrolledID = nil
             }
     }
 
@@ -485,7 +511,7 @@ struct LyricScrollView: View {
                 // 横向滑动是「封面/歌词」翻页手势，不参与歌词拖动
                 guard abs(v.translation.height) >= abs(v.translation.width) else { return }
                 if dragBaseIndex == nil {
-                    dragBaseIndex = activeIndex() ?? 0
+                    dragBaseIndex = activeIndex(at: PlayerManager.shared.clock.time) ?? 0
                     autoScroll = false
                 }
                 seekTargetIndex = clampTarget((dragBaseIndex ?? 0) + Int((-v.translation.height / rowHeight).rounded()))
@@ -507,6 +533,7 @@ struct LyricScrollView: View {
                 guard line.time >= 0 else { return }
                 player.seek(to: line.time)
                 autoScroll = true
+                lastScrolledID = nil
             }
     }
 
@@ -539,22 +566,23 @@ struct LyricScrollView: View {
                        startPoint: .top, endPoint: .bottom)
     }
 
-    private func handleTick(proxy: ScrollViewProxy) {
-        guard autoScroll, let idx = activeIndex() else { return }
-        let target = player.lyricLines[idx].id
+    private func handleTick(proxy: ScrollViewProxy, time: TimeInterval) {
+        let idx = activeIndex(at: time)
+        if idx != activeID { activeID = idx }
+        guard autoScroll, let id = activeID, id != lastScrolledID else { return }
+        lastScrolledID = id
         withAnimation(.easeInOut(duration: 0.3)) {
-            proxy.scrollTo(target, anchor: .center)
+            proxy.scrollTo(id, anchor: .center)
         }
     }
 
-    private func active(_ line: LyricLine) -> Bool {
-        guard let idx = activeIndex() else { return false }
-        return player.lyricLines[idx].id == line.id
-    }
-
-    private func activeIndex() -> Int? {
+    /// 每行都有时间轴，直接线性扫一遍即可（每次刷新只调一次）
+    private func activeIndex(at time: TimeInterval) -> Int? {
+        let lines = player.lyricLines
+        guard !lines.isEmpty else { return nil }
+        let limit = time + 0.25
         var result: Int?
-        for (i, line) in player.lyricLines.enumerated() where line.time <= player.currentTime + 0.25 {
+        for (i, line) in lines.enumerated() where line.time >= 0 && line.time <= limit {
             result = i
         }
         return result

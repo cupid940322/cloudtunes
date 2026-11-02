@@ -23,8 +23,9 @@ final class PlayerManager: NSObject, ObservableObject {
     @Published var queue: [Track] = []
     @Published var currentIndex: Int = -1
     @Published var isPlaying = false
-    @Published var currentTime: TimeInterval = 0
-    @Published var duration: TimeInterval = 0
+    /// 高频进度时钟：0.25 秒一跳，**独立**发布。
+    /// 不能放在 PlayerManager 的 @Published 里，否则每秒 4 次触发所有观察者重建整个界面。
+    let clock = PlaybackClock()
     @Published var lyricLines: [LyricLine] = []
     @Published var lyricSourceNote: String = ""
     @Published var nowPlayingTitle: String = ""
@@ -53,8 +54,6 @@ final class PlayerManager: NSObject, ObservableObject {
     /// 9 秒还没出声就直接走缓存兜底
     private var watchdogTask: Task<Void, Never>?
     private var itemStatusObservation: NSKeyValueObservation?
-    /// 锁屏进度每秒同步用
-    private var lastSyncedSecond: Int = -1
     /// 锁屏封面缓存（避免每秒读盘）
     private var npArtworkKey: String?
     private var npArtwork: MPMediaItemArtwork?
@@ -108,6 +107,18 @@ final class PlayerManager: NSObject, ObservableObject {
         (0..<queue.count).contains(currentIndex) ? queue[currentIndex] : nil
     }
 
+    /// 已播秒数（读写都走 clock，读不会触发本对象刷新）
+    var currentTime: TimeInterval {
+        get { clock.time }
+        set { clock.setTime(newValue) }
+    }
+
+    /// 当前曲目时长
+    var duration: TimeInterval {
+        get { clock.duration }
+        set { clock.setDuration(newValue) }
+    }
+
     override init() {
         super.init()
         let session = AVAudioSession.sharedInstance()
@@ -120,6 +131,14 @@ final class PlayerManager: NSObject, ObservableObject {
         _ = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
         ) { [weak self] _ in
+            self?.persistSession()
+        }
+        // 即将进入后台（锁屏 / 切走）时补写一次锁屏信息，
+        // 保证锁屏上的已播时间是准的；前台播放期间交给系统按播放速率外推。
+        _ = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.updateNowPlaying()
             self?.persistSession()
         }
     }
@@ -244,9 +263,11 @@ final class PlayerManager: NSObject, ObservableObject {
     private var widgetCoverKey: String?
     private var widgetLastSignature = ""
 
-    /// 每 5 秒（或换歌/暂停时）把正在播放的快照写给小组件
+    /// 每 20 秒（或换歌/暂停时）把正在播放的快照写给小组件。
+    /// 小组件上的进度是用 Text(timerInterval:) 自己走的，不需要频繁重写，
+    /// 而 reloadTimelines 是有成本的系统调用，调太勤会拖慢主线程。
     private func pushWidgetSnapshot(track: Track) {
-        let signature = "\(track.id)|\(isPlaying)|\(Int(currentTime / 5))"
+        let signature = "\(track.id)|\(isPlaying)|\(Int(currentTime / 20))"
         guard signature != widgetLastSignature else { return }
         widgetLastSignature = signature
 
@@ -276,21 +297,26 @@ final class PlayerManager: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] time in
             guard let self else { return }
+            // 只写时钟：PlayerManager 本身不再发通知，列表 / 首页因此不会每秒重建 4 次
             self.currentTime = time.seconds
-            let d = self.player.currentItem?.duration.seconds ?? 0
-            if d.isFinite, d > 0 {
-                let rounded = (d * 100).rounded() / 100
-                if abs(self.duration - rounded) > 0.05 {
+
+            // 时长只在还没解析出来时去问一次 AVPlayerItem，解析好之后就不再碰
+            if self.duration <= 0, let item = self.player.currentItem {
+                let d = item.duration.seconds
+                if d.isFinite, d > 0 {
+                    self.duration = (d * 100).rounded() / 100
                     // 时长刚解析出来（之前是 0），立刻刷锁屏，否则锁屏没有总时长
-                    self.duration = rounded
                     self.updateNowPlaying()
+                    return
                 }
             }
-            // 每秒同步一次锁屏的已播时间
-            let second = Int(time.seconds)
-            if second != self.lastSyncedSecond {
-                self.lastSyncedSecond = second
-                self.updateNowPlaying()
+            // 锁屏 / 控制中心的进度不再每秒重写：
+            // 只要 nowPlayingInfo 里带播放速率，系统会自己外推进度条。
+            // 之前每秒一次跨进程写 MPNowPlayingInfoCenter，滑动界面时会周期性地顿一下。
+
+            // 桌面小组件每 20 秒补一次快照（内部有节流，绝大多数调用会立刻返回）
+            if let track = self.currentTrack, self.isPlaying, Int(time.seconds) % 20 == 0 {
+                self.pushWidgetSnapshot(track: track)
             }
         }
     }
@@ -363,7 +389,6 @@ final class PlayerManager: NSObject, ObservableObject {
         nowPlayingTitle = track.title
         currentTime = 0
         duration = 0
-        lastSyncedSecond = -1
         npArtworkKey = nil
         lyricLines = []
         playNote = ""

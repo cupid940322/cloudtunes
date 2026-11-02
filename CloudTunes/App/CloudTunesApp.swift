@@ -47,10 +47,8 @@ final class AppUIState: ObservableObject {
 }
 
 struct RootView: View {
-    @ObservedObject private var player = PlayerManager.shared
     @ObservedObject private var ui = AppUIState.shared
     @State private var tab: AppTab = .home
-    @State private var showPlayer = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -68,24 +66,7 @@ struct RootView: View {
                     .allowsHitTesting(tab == .profile)
             }
 
-            VStack(spacing: 8) {
-                if player.currentTrack != nil {
-                    MiniPlayerBar { ui.showPlayer = true }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                CustomTabBar(selection: $tab)
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-            // 封闭式底栏：不透明背景一直铺到屏幕最底，
-            // 主界面内容从下面滚过时被完全挡住
-            .background(
-                Theme.background
-                    .overlay(alignment: .top) { Theme.hairline.frame(height: 0.5) }
-                    .ignoresSafeArea(edges: .bottom)
-            )
-            .animation(.spring(response: 0.34, dampingFraction: 0.85), value: player.currentTrack?.id)
+            PlayerDock(selection: $tab)
         }
         .fullScreenCover(isPresented: $ui.showPlayer) {
             PlayerView()
@@ -97,6 +78,36 @@ struct RootView: View {
             }
         }
         .tint(Theme.accent)
+    }
+}
+
+/// 底部「迷你播放条 + 标签栏」。
+/// 单独拆出来，只让它观察 PlayerManager：换歌、暂停时不会把上面三个 Tab 的整棵视图树一起重建。
+struct PlayerDock: View {
+    @Binding var selection: AppTab
+
+    @ObservedObject private var player = PlayerManager.shared
+    @ObservedObject private var ui = AppUIState.shared
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if player.currentTrack != nil {
+                MiniPlayerBar { ui.showPlayer = true }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            CustomTabBar(selection: $selection)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        // 封闭式底栏：不透明背景一直铺到屏幕最底，
+        // 主界面内容从下面滚过时被完全挡住
+        .background(
+            Theme.background
+                .overlay(alignment: .top) { Theme.hairline.frame(height: 0.5) }
+                .ignoresSafeArea(edges: .bottom)
+        )
+        .animation(.spring(response: 0.34, dampingFraction: 0.85), value: player.currentTrack?.id)
     }
 }
 

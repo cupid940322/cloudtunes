@@ -165,6 +165,8 @@ enum MetadataScraper {
         let name = key.replacingOccurrences(of: "/", with: "_") + ".jpg"
         let url = artworkDir.appendingPathComponent(name)
         try? jpeg.write(to: url)
+        // 新封面已落盘：「这首没有封面」的负缓存要作废，否则界面会一直显示占位图
+        ArtworkCache.shared.clearMissing()
         return name
     }
 
