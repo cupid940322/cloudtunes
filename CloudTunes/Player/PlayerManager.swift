@@ -659,7 +659,8 @@ final class PlayerManager: NSObject, ObservableObject {
         }
     }
 
-    /// LRCLIB（外网，国内可能较慢，超时就让位给网易云）    private func lrclibLyrics(for track: Track) async -> LyricHit? {
+    /// LRCLIB（外网，国内可能较慢，超时就让位给网易云）
+    private func lrclibLyrics(for track: Track) async -> LyricHit? {
         await withTimeout(6) {
             guard let candidates = try? await LyricsService.search(title: track.title, artist: track.artist),
                   let first = candidates.first(where: { $0.synced }) ?? candidates.first else { return nil }
