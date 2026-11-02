@@ -572,6 +572,8 @@ final class PlayerManager: NSObject, ObservableObject {
         let hit = await withTaskGroup(of: LyricHit?.self) { group -> LyricHit? in
             group.addTask { await self.siblingLRC(for: track) }
             group.addTask { await self.neteaseLyrics(for: track) }
+            group.addTask { await self.qqLyrics(for: track) }
+            group.addTask { await self.kugouLyrics(for: track) }
             group.addTask { await self.lrclibLyrics(for: track) }
             var winner: LyricHit?
             for await r in group {
@@ -628,8 +630,36 @@ final class PlayerManager: NSObject, ObservableObject {
         }
     }
 
-    /// LRCLIB（外网，国内可能较慢，超时就让位给网易云）
-    private func lrclibLyrics(for track: Track) async -> LyricHit? {
+    /// QQ 音乐：搜到候选后取第一条的歌词（QQ 歌词库补网易云的缺口）
+    private func qqLyrics(for track: Track) async -> LyricHit? {
+        await withTimeout(7) {
+            let keyword = [track.artist, track.title].compactMap { $0 }.joined(separator: " ")
+            guard let song = await LyricsService.qqSearchSongs(keyword: keyword, limit: 5).first,
+                  let text = await LyricsService.qqLyric(songmid: song.mid) else { return nil }
+            let lines = LyricsService.lines(from: text)
+            guard !lines.isEmpty else { return nil }
+            let synced = lines.contains { $0.time >= 0 }
+            return LyricHit(lines: lines,
+                            note: "歌词来源：QQ音乐（\(song.artist) - \(song.title)）" + (synced ? "" : " · 纯文本"))
+        }
+    }
+
+    /// 酷狗音乐
+    private func kugouLyrics(for track: Track) async -> LyricHit? {
+        await withTimeout(7) {
+            let candidates = await LyricsService.kugouCandidates(title: track.title, artist: track.artist)
+            guard let first = candidates.first,
+                  case let .kugou(id, key) = first.lookup,
+                  let text = await LyricsService.kugouLyric(id: id, accessKey: key) else { return nil }
+            let lines = LyricsService.lines(from: text)
+            guard !lines.isEmpty else { return nil }
+            let synced = lines.contains { $0.time >= 0 }
+            return LyricHit(lines: lines,
+                            note: "歌词来源：酷狗音乐（\(first.artist) - \(first.title)）" + (synced ? "" : " · 纯文本"))
+        }
+    }
+
+    /// LRCLIB（外网，国内可能较慢，超时就让位给网易云）    private func lrclibLyrics(for track: Track) async -> LyricHit? {
         await withTimeout(6) {
             guard let candidates = try? await LyricsService.search(title: track.title, artist: track.artist),
                   let first = candidates.first(where: { $0.synced }) ?? candidates.first else { return nil }

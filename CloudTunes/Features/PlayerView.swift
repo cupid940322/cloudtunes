@@ -563,79 +563,53 @@ struct LyricScrollView: View {
 
 // MARK: - 手动搜歌词
 
+/// 多源歌词搜索：网易云 / QQ音乐 / 酷狗音乐 / LRCLIB 四个库同时查，按来源分组展示
 struct LyricSearchSheet: View {
     @ObservedObject private var player = PlayerManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var query = ""
-    @State private var results: [LyricsService.Candidate] = []
-    @State private var neteaseResults: [MusicSearchService.SongInfo] = []
+    @State private var hits: [LyricCandidate] = []
     @State private var searching = false
+    @State private var loadingID: String?
     @State private var message = ""
+
+    private struct HitGroup: Identifiable {
+        let source: LyricCandidate.Source
+        let items: [LyricCandidate]
+        var id: String { source.rawValue }
+    }
+
+    private var groups: [HitGroup] {
+        LyricCandidate.Source.allCases.compactMap { source in
+            let items = hits.filter { $0.source == source }
+            return items.isEmpty ? nil : HitGroup(source: source, items: items)
+        }
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("歌名 歌手", text: $query)
-                            .submitLabel(.search)
-                            .onSubmit { doSearch() }
-                        Button("搜索") { doSearch() }.font(.footnote.weight(.semibold))
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 12)
-                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    searchBar
 
                     if searching {
-                        ProgressView("搜索中…").padding()
+                        ProgressView("正在查 4 个歌词库…").padding()
                     }
                     if !message.isEmpty {
                         Text(message).font(.footnote).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
 
-                    if !neteaseResults.isEmpty {
-                        group(title: "网易云候选") {
-                            ForEach(neteaseResults.indices, id: \.self) { idx in
-                            let s = neteaseResults[idx]
-                                Button {
-                                    applyNetease(s)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(s.title ?? "—").font(.subheadline).foregroundStyle(.primary)
-                                        Text("\(s.artist ?? "—") · \(s.album ?? "—")")
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 14).padding(.vertical, 10)
-                                }
-                                .buttonStyle(.plain)
-                                if idx < neteaseResults.count - 1 { Divider().padding(.leading, 14) }
-                            }
-                        }
+                    ForEach(groups) { group in
+                        section(group.source, group.items)
                     }
 
-                    if !results.isEmpty {
-                        group(title: "LRCLIB") {
-                            ForEach(results.indices, id: \.self) { idx in
-                            let c = results[idx]
-                                Button {
-                                    applyLRCLIB(c)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(c.artistName) - \(c.trackName)")
-                                            .font(.subheadline).foregroundStyle(.primary)
-                                        Text(c.synced ? "带时间轴 ✓" : "纯文本")
-                                            .font(.caption)
-                                            .foregroundStyle(c.synced ? .green : .secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 14).padding(.vertical, 10)
-                                }
-                                .buttonStyle(.plain)
-                                if idx < results.count - 1 { Divider().padding(.leading, 14) }
-                            }
-                        }
+                    if !searching && hits.isEmpty && message.isEmpty {
+                        Text("网易云、QQ音乐、酷狗、LRCLIB 四个库会同时查完再一起列出来")
+                            .font(.caption).foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 24)
                     }
                 }
                 .padding(Theme.pagePadding)
@@ -657,14 +631,61 @@ struct LyricSearchSheet: View {
         }
     }
 
-    @ViewBuilder
-    private func group<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(spacing: 0) { content() }
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("歌名 歌手", text: $query)
+                .submitLabel(.search)
+                .onSubmit { doSearch() }
+            Button("搜索") { doSearch() }.font(.footnote.weight(.semibold))
         }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func section(_ source: LyricCandidate.Source, _ items: [LyricCandidate]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(source.rawValue).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                Text("\(items.count)").font(.caption2).foregroundStyle(.tertiary)
+                Spacer()
+            }
+            VStack(spacing: 0) {
+                ForEach(items) { c in
+                    Button { apply(c) } label: { row(c) }
+                        .buttonStyle(.plain)
+                    if c.id != items.last?.id {
+                        Divider().padding(.leading, 14)
+                    }
+                }
+            }
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    private func row(_ c: LyricCandidate) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(c.title.isEmpty ? "—" : c.title)
+                    .font(.subheadline).foregroundStyle(.primary).lineLimit(1)
+                Text([c.artist, c.album]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            if let synced = c.knownSynced {
+                Text(synced ? "带时间轴 ✓" : "纯文本")
+                    .font(.caption2)
+                    .foregroundStyle(synced ? .green : .secondary)
+            }
+            if loadingID == c.id {
+                ProgressView().scaleEffect(0.7)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .contentShape(Rectangle())
     }
 
     private func doSearch() {
@@ -673,29 +694,42 @@ struct LyricSearchSheet: View {
         let artist = parts.count > 1 ? parts.first : nil
         searching = true
         message = ""
+        hits = []
         Task {
-            let lrcList = try? await LyricsService.search(title: title, artist: artist)
-            let neList = await MusicSearchService.candidates(title: title, artist: artist, limit: 6)
+            let list = await LyricsService.searchAll(title: title, artist: artist)
             await MainActor.run {
-                results = lrcList ?? []
-                neteaseResults = neList.filter { $0.neteaseID != nil }
+                hits = list
                 searching = false
-                if results.isEmpty && neteaseResults.isEmpty { message = "没有找到，换个关键词试试" }
+                if list.isEmpty { message = "四个库都没找到，换个关键词试试（比如只留歌名）" }
             }
         }
     }
 
-    private func applyLRCLIB(_ c: LyricsService.Candidate) {
-        let parsed = c.syncedLyrics.map { LRCParser.parse($0) } ?? []
-        if parsed.isEmpty, let plain = c.plain {
-            player.lyricLines = plain.components(separatedBy: .newlines)
-                .enumerated().map { LyricLine(id: $0.offset, time: -1, text: $0.element) }
-        } else {
-            player.lyricLines = parsed
+    private func apply(_ c: LyricCandidate) {
+        loadingID = c.id
+        Task {
+            let text = await LyricsService.lyricText(for: c)
+            await MainActor.run {
+                loadingID = nil
+                guard let text, !text.isEmpty else {
+                    message = "这首歌在\(c.source.rawValue)没有歌词，换一条试试"
+                    return
+                }
+                let lines = LyricsService.lines(from: text)
+                guard !lines.isEmpty else {
+                    message = "\(c.source.rawValue)返回的歌词是空的，换一条试试"
+                    return
+                }
+                player.lyricLines = lines
+                let synced = lines.contains { $0.time >= 0 }
+                let who = [c.artist, c.title].filter { !$0.isEmpty }.joined(separator: " - ")
+                player.lyricSourceNote = "歌词来源：\(c.source.rawValue)"
+                    + (who.isEmpty ? "" : "（\(who)）")
+                    + (synced ? "" : " · 纯文本")
+                cacheCurrentLyrics()
+                dismiss()
+            }
         }
-        player.lyricSourceNote = "歌词来源：LRCLIB（\(c.artistName)）"
-        cacheCurrentLyrics()
-        dismiss()
     }
 
     /// 手动选中的歌词也存进缓存，下次切到这首歌直接命中
@@ -704,25 +738,8 @@ struct LyricSearchSheet: View {
         let key = LyricsCache.key(title: track.title, artist: track.artist)
         LyricsCache.store(player.lyricLines, note: player.lyricSourceNote, for: key)
     }
-
-    private func applyNetease(_ s: MusicSearchService.SongInfo) {
-        guard let id = s.neteaseID else { return }
-        Task {
-            let text = await MusicSearchService.neteaseLyrics(id: id)
-            await MainActor.run {
-                if let text {
-                    let parsed = LRCParser.parse(text)
-                    player.lyricLines = parsed
-                    player.lyricSourceNote = "歌词来源：网易云（\(s.artist ?? "")）"
-                    cacheCurrentLyrics()
-                } else {
-                    message = "这首歌在网易云没有歌词"
-                }
-                dismiss()
-            }
-        }
-    }
 }
+
 
 extension TimeInterval {
     var formattedTime: String {
