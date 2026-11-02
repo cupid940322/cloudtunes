@@ -35,6 +35,17 @@ final class ArtworkCache {
         missing.removeAllObjects()
     }
 
+    /// 封面文件被覆盖写入（手动重新匹配）后调用：
+    /// 文件路径不变但内容变了，NSCache 里的旧图要逐尺寸驱逐，否则界面一直显示旧封面
+    func evict(named: String?) {
+        guard let named, !named.isEmpty else { return }
+        for px in [24, 32, 42, 44, 48, 56, 64, 76, 92, 110, 124, 128, 160, 200, 300, 500, 700] {
+            let key = "\(named)@\(px)" as NSString
+            cache.removeObject(forKey: key)
+            missing.removeObject(forKey: key)
+        }
+    }
+
     private func downsample(url: URL, maxPixel: CGFloat) -> UIImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [

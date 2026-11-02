@@ -259,6 +259,36 @@ final class PlayerManager: NSObject, ObservableObject {
         pendingSeek = session.position
     }
 
+    /// 资料库里的歌曲信息被修改（手动匹配 / 手动修正 / 重新刮削）后，同步刷新播放队列里的旧拷贝。
+    /// 否则播放页、锁屏、小组件会一直显示旧歌手——封面反而会变（封面文件按歌曲 ID 覆盖写入），
+    /// 造成「封面更新了、歌手没更新」的怪现象。
+    func refreshTrackMetadata(_ updated: Track) {
+        var changed = false
+        for i in queue.indices where queue[i].id == updated.id {
+            if queue[i] != updated { queue[i] = updated; changed = true }
+        }
+        for i in originalQueue.indices where originalQueue[i].id == updated.id {
+            if originalQueue[i] != updated { originalQueue[i] = updated; changed = true }
+        }
+        // 「继续播放」的会话快照也要跟着换，否则下次恢复又是旧信息
+        if let session = savedSession, session.tracks.contains(where: { $0.id == updated.id }) {
+            var s = session
+            for i in s.tracks.indices where s.tracks[i].id == updated.id { s.tracks[i] = updated }
+            savedSession = s
+            changed = true
+        }
+        guard changed else { return }
+
+        if currentTrack?.id == updated.id {
+            nowPlayingTitle = updated.title
+            // 封面文件是按歌曲 ID 覆盖写的，路径没变内容变了，旧缓存图要清掉
+            ArtworkCache.shared.evict(named: updated.artworkFile)
+            // 强制重写锁屏与小组件：快照签名里没有歌名/歌手，不清签名会被节流直接跳过
+            widgetLastSignature = ""
+            updateNowPlaying()
+        }
+    }
+
     // MARK: - 桌面小组件同步
     private var widgetCoverKey: String?
     private var widgetLastSignature = ""

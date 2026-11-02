@@ -409,6 +409,12 @@ final class LibraryStore: ObservableObject {
                     }
                 }
                 libraries[li].tracks = tracks
+
+                // 正在播放的那首如果刚被重刮，同步刷新播放队列（否则播放页/锁屏还是旧信息）
+                if let cur = PlayerManager.shared.currentTrack,
+                   let fresh = tracks.first(where: { $0.id == cur.id }) {
+                    PlayerManager.shared.refreshTrackMetadata(fresh.toTrack(kind: providerKind))
+                }
             }
 
             done += results.count
@@ -426,5 +432,9 @@ final class LibraryStore: ObservableObject {
         guard let li = libraries.firstIndex(where: { $0.id == libraryID }),
               let ti = libraries[li].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         mutate(&libraries[li].tracks[ti])
+        // 元数据变了就把新信息同步给正在播放的队列，
+        // 播放页 / 锁屏 / 小组件才会跟着更新（否则一直显示旧歌手）
+        let kind = libraries[li].providerKind
+        PlayerManager.shared.refreshTrackMetadata(libraries[li].tracks[ti].toTrack(kind: kind))
     }
 }
