@@ -72,10 +72,8 @@ struct RootView: View {
             PlayerView()
         }
         .onOpenURL { url in
-            // 小组件点击进入播放页
-            if url.scheme == "cloudtunes" {
-                ui.showPlayer = true
-            }
+            // 小组件点击：cloudtunes://player|favorites|recent|shuffle|resume
+            WidgetDeepLink.handle(url)
         }
         .tint(Theme.accent)
     }
