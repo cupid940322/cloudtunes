@@ -24,8 +24,11 @@ enum MetadataScraper {
     }
 
     /// 刮削单个文件（需要直链）。
+    /// - Parameters:
+    ///   - hintArtist/hintAlbum: 从文件夹结构推断出的歌手/专辑，比文件名可靠，用来约束在线匹配
     static func scrape(url: URL, headers: [String: String], trackID: String,
-                       fallbackTitle: String, fallbackArtist: String?) async -> Result {
+                       fallbackTitle: String, fallbackArtist: String?,
+                       hintArtist: String? = nil, hintAlbum: String? = nil) async -> Result {
         var result = Result()
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
 
@@ -63,20 +66,34 @@ enum MetadataScraper {
         if let a = embeddedArtist?.trimmingCharacters(in: .whitespaces), !a.isEmpty { result.artist = a }
         if let al = embeddedAlbum?.trimmingCharacters(in: .whitespaces), !al.isEmpty { result.album = al }
 
+        // 专辑顺序：内嵌标签 > 文件夹名 > 在线。人整理目录时是认真写的，比在线结果更贴近这张碟
+        if (result.album?.isEmpty ?? true), let ha = hintAlbum?.trimmingCharacters(in: .whitespaces), !ha.isEmpty {
+            result.album = ha
+        }
+
         // 3. 在线匹配：缺封面 / 缺专辑 / 缺艺术家时才发起
         let needOnline = result.artworkFile == nil
             || (result.album?.isEmpty ?? true)
             || (result.artist?.isEmpty ?? true)
         let queryTitle = (result.title?.isEmpty == false) ? result.title! : fallbackTitle
-        let queryArtist = (result.artist?.isEmpty == false) ? result.artist : fallbackArtist
+        // 歌手顺序：内嵌标签 > 文件夹名 > 文件名
+        let queryArtist = (result.artist?.isEmpty == false)
+            ? result.artist
+            : (hintArtist?.isEmpty == false ? hintArtist : fallbackArtist)
+        // 目录推断出的歌手作为「约束」：候选歌手对不上就扣分，压掉同名不同人
+        let artistHint = hintArtist?.trimmingCharacters(in: .whitespaces)
 
         if needOnline, !queryTitle.isEmpty {
-            var match = await MusicSearchService.bestMatch(title: queryTitle, artist: queryArtist)
+            var match = await MusicSearchService.bestMatch(title: queryTitle,
+                                                           artist: queryArtist,
+                                                           artistHint: artistHint)
 
             // 「歌名-歌手」倒序文件名：正着匹配不到就反过来再试一次
             var didSwap = false
             if match == nil, let swappedTitle = queryArtist, !swappedTitle.isEmpty {
-                if let alt = await MusicSearchService.bestMatch(title: swappedTitle, artist: queryTitle) {
+                if let alt = await MusicSearchService.bestMatch(title: swappedTitle,
+                                                                artist: queryTitle,
+                                                                artistHint: artistHint) {
                     match = alt
                     didSwap = true
                 }

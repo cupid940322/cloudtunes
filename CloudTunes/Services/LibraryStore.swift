@@ -198,12 +198,41 @@ final class LibraryStore: ObservableObject {
                 known.insert(t.fileID)
                 added += 1
             }
+            // 老库补文件夹路径（旧版本扫描时没记录），只补路径不动元数据
+            var pathMap: [String: [String]] = [:]
+            for f in found { if let p = f.folderPath, !p.isEmpty { pathMap[f.fileID] = p } }
+            for i in libraries[idx].tracks.indices where libraries[idx].tracks[i].folderPath == nil {
+                if let p = pathMap[libraries[idx].tracks[i].fileID] {
+                    libraries[idx].tracks[i].folderPath = p
+                }
+            }
             libraries[idx].lastScanAt = Date()
         }
         save()
         progress[libraryID]?.phase = "新增 \(added) 首，开始刮削…"
         await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
         progress[libraryID] = nil
+    }
+
+    /// 老库补文件夹路径（旧版本扫描时没记录 folderPath）。
+    /// 有了「歌手/专辑」目录结构，刮削才能拿目录名当上下文去约束匹配。
+    private func backfillFolderPaths(libraryID: String) async {
+        guard let lib = library(id: libraryID),
+              lib.tracks.contains(where: { $0.folderPath == nil }),
+              let provider = ProviderRegistry.provider(kind: lib.providerKind) else { return }
+        progress[libraryID]?.phase = "整理目录结构…"
+        let root = CloudFile(id: lib.folderID, name: lib.folderName, size: 0, isFolder: true)
+        let found = await collect(provider: provider, kind: lib.providerKind, root: root,
+                                  includeSubfolders: lib.scansSubfolders, libID: libraryID)
+        var pathMap: [String: [String]] = [:]
+        for f in found { if let p = f.folderPath, !p.isEmpty { pathMap[f.fileID] = p } }
+        guard let idx = libraries.firstIndex(where: { $0.id == libraryID }) else { return }
+        for i in libraries[idx].tracks.indices where libraries[idx].tracks[i].folderPath == nil {
+            if let p = pathMap[libraries[idx].tracks[i].fileID] {
+                libraries[idx].tracks[i].folderPath = p
+            }
+        }
+        save()
     }
 
     /// 强制重刮全部：把元数据回滚成文件名解析结果，再重新匹配（用于修正以前的错误）
@@ -213,6 +242,9 @@ final class LibraryStore: ObservableObject {
         BackgroundKeepAlive.shared.begin()
         defer { BackgroundKeepAlive.shared.end() }
 
+        // 先把「歌手/专辑」目录结构补齐，否则老库没有上下文可用
+        await backfillFolderPaths(libraryID: libraryID)
+
         if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
             for i in libraries[idx].tracks.indices {
                 // 手动改过/手动匹配过的歌不动：用户的选择优先于自动匹配，
@@ -220,14 +252,12 @@ final class LibraryStore: ObservableObject {
                 if libraries[idx].tracks[i].metaSource == "manual" { continue }
                 let t = libraries[idx].tracks[i]
                 let parsed = MusicScanner.parse(t.fileName)
+                let hint = scrapeHints(for: t)
                 libraries[idx].tracks[i].title = parsed.title
-                libraries[idx].tracks[i].artist = parsed.artist
-                // 专辑回退到所在文件夹名
-                if let parent = t.parentName, t.parentID != lib.folderID {
-                    libraries[idx].tracks[i].album = parent
-                } else {
-                    libraries[idx].tracks[i].album = nil
-                }
+                libraries[idx].tracks[i].artist = parsed.artist ?? hint.artist
+                // 专辑优先用「歌手 - 专辑」/「歌手/专辑」结构推断，其次才退回目录名
+                libraries[idx].tracks[i].album = hint.album
+                    ?? (t.parentID != lib.folderID ? t.parentName : nil)
                 libraries[idx].tracks[i].scraped = false
                 libraries[idx].tracks[i].confidence = nil
                 libraries[idx].tracks[i].metaSource = "filename"
@@ -246,6 +276,8 @@ final class LibraryStore: ObservableObject {
         progress[libraryID] = ScanProgress(phase: "检查缺失信息…")
         BackgroundKeepAlive.shared.begin()
         defer { BackgroundKeepAlive.shared.end() }
+
+        await backfillFolderPaths(libraryID: libraryID)
 
         if let idx = libraries.firstIndex(where: { $0.id == libraryID }) {
             for i in libraries[idx].tracks.indices {
@@ -272,8 +304,10 @@ final class LibraryStore: ObservableObject {
         let file = CloudFile(id: item.fileID, name: item.fileName, size: item.size,
                              isFolder: false, modifiedAt: nil, extra: ["parentID": item.parentID])
         guard let link = try? await provider.streamURL(file: file) else { return }
+        let hint = scrapeHints(for: item)
         let meta = await MetadataScraper.scrape(url: link.url, headers: link.headers, trackID: item.id,
-                                                fallbackTitle: item.title, fallbackArtist: item.artist)
+                                                fallbackTitle: item.title, fallbackArtist: item.artist,
+                                                hintArtist: hint.artist, hintAlbum: hint.album)
         updateTrack(libraryID: libraryID, trackID: trackID) { t in
             if let v = meta.title, !v.isEmpty { t.title = v }
             if let v = meta.artist, !v.isEmpty { t.artist = v }
@@ -327,7 +361,8 @@ final class LibraryStore: ObservableObject {
     private func collect(provider: CloudProvider, kind: CloudKind, root: CloudFile,
                          includeSubfolders: Bool, libID: String) async -> [LibraryTrack] {
         var found: [LibraryTrack] = []
-        var queue: [(id: String, name: String)] = [(root.id, root.name)]
+        // path = 从库根到当前目录的目录名（不含库根），用于推断歌手/专辑
+        var queue: [(id: String, name: String, path: [String])] = [(root.id, root.name, [])]
         var visited = Set<String>()
         let maxFolders = 800
         let maxTracks = 8000
@@ -344,12 +379,17 @@ final class LibraryStore: ObservableObject {
             guard let items = try? await ProviderRegistry.listWithParent(provider, folderID: current.id) else { continue }
             for item in items {
                 if item.isFolder {
-                    if includeSubfolders { queue.append((item.id, item.name)) }
+                    if includeSubfolders {
+                        queue.append((item.id, item.name, current.path + [item.name]))
+                    }
                     continue
                 }
                 guard MusicScanner.isAudioFile(item.name) else { continue }
                 let parsed = MusicScanner.parse(item.name)
                 let isRoot = current.id == root.id
+                // 用目录名推断歌手/专辑：比文件名可靠得多（人整理目录时是认真写的）
+                let hint = FolderHints.hint(for: current.path, filenameArtist: parsed.artist)
+                let hintedArtist = hint.artistConfidence >= 0.80 ? hint.artist : nil
                 found.append(LibraryTrack(
                     id: "\(kind.rawValue)-\(item.id)",
                     fileID: item.id,
@@ -357,8 +397,8 @@ final class LibraryStore: ObservableObject {
                     size: item.size,
                     parentID: current.id,
                     title: parsed.title,
-                    artist: parsed.artist,
-                    album: isRoot ? nil : current.name,
+                    artist: parsed.artist ?? hintedArtist,
+                    album: hint.album ?? (isRoot ? nil : current.name),
                     duration: nil,
                     artworkFile: nil,
                     scraped: false,
@@ -366,7 +406,8 @@ final class LibraryStore: ObservableObject {
                     addedAt: now,
                     metaSource: "filename",
                     confidence: nil,
-                    parentName: isRoot ? nil : current.name))
+                    parentName: isRoot ? nil : current.name,
+                    folderPath: current.path.isEmpty ? nil : current.path))
             }
             progress[libID]?.foundTracks = found.count
         }
@@ -378,6 +419,22 @@ final class LibraryStore: ObservableObject {
     private struct ScrapeOutcome: Sendable {
         let trackID: String
         let result: MetadataScraper.Result?
+    }
+
+    /// 用「目录结构 + 文件名」推算歌手/专辑提示。
+    /// 老库没有 folderPath 时退化成父目录名（单层），仍能靠文件名交叉验证判断是不是歌手目录。
+    private func folderHints(for t: LibraryTrack) -> FolderHints.Hint {
+        let path = t.folderPath ?? (t.parentName.map { [$0] } ?? [])
+        let fileArtist = MusicScanner.parse(t.fileName).artist
+        return FolderHints.hint(for: path, filenameArtist: fileArtist)
+    }
+
+    /// 刮削时真正拿去用的提示：只取可信度够高的，
+    /// 避免把「新建文件夹」「合集」猜成歌手/专辑反而制造错误。
+    private func scrapeHints(for t: LibraryTrack) -> (artist: String?, album: String?) {
+        let h = folderHints(for: t)
+        return (h.artistConfidence >= 0.80 ? h.artist : nil,
+                h.albumConfidence >= 0.50 ? h.album : nil)
     }
 
     private func scrapeAll(libraryID: String, providerKind: CloudKind) async {
@@ -394,9 +451,12 @@ final class LibraryStore: ObservableObject {
             if Task.isCancelled { break }
             let upper = min(cursor + batchSize, pending.count)
             let batch = Array(pending[cursor..<upper])
+            // 目录提示在主线程先算好，别在并发任务里再回头读 self
+            let batchHints = batch.map { scrapeHints(for: $0) }
 
             let results = await withTaskGroup(of: ScrapeOutcome.self) { group in
-                for track in batch {
+                for (i, track) in batch.enumerated() {
+                    let hint = batchHints[i]
                     group.addTask {
                         let file = CloudFile(id: track.fileID, name: track.fileName, size: track.size,
                                              isFolder: false, modifiedAt: nil,
@@ -408,7 +468,9 @@ final class LibraryStore: ObservableObject {
                                                                 headers: link.headers,
                                                                 trackID: track.id,
                                                                 fallbackTitle: track.title,
-                                                                fallbackArtist: track.artist)
+                                                                fallbackArtist: track.artist,
+                                                                hintArtist: hint.artist,
+                                                                hintAlbum: hint.album)
                         return ScrapeOutcome(trackID: track.id, result: meta)
                     }
                 }

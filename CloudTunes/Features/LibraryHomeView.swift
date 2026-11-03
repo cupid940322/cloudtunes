@@ -540,7 +540,7 @@ struct LibraryDetailView: View {
                 }
             }
         }
-        .confirmationDialog("「全部重新刮削」会按文件名重新匹配并覆盖现有信息；「只补缺失」不会动已有的歌名和歌手", isPresented: $confirmRescrape) {
+        .confirmationDialog("会先读一遍文件夹结构（歌手/专辑目录名）再匹配；「全部重新刮削」会覆盖现有信息，「只补缺失」不会动已有的歌名和歌手", isPresented: $confirmRescrape) {
             Button("只补缺失的封面 / 专辑") {
                 Task { await store.fillMissing(libraryID: libraryID) }
             }

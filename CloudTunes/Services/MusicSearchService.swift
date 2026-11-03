@@ -263,7 +263,9 @@ enum MusicSearchService {
     }
 
     /// 给候选打分：标题占大头，艺术家占小头。没有艺术家信息时略微降权并抬高阈值。
-    static func score(candidate: SongInfo, title: String, artist: String?) -> Double {
+    /// - Parameter artistHint: 文件夹结构推断出的歌手，对得上加分、完全对不上扣分
+    static func score(candidate: SongInfo, title: String, artist: String?,
+                      artistHint: String? = nil) -> Double {
         let tSim = TextMatch.similarity(title, candidate.title ?? "")
         if tSim < 0.45 { return tSim * 0.5 }
 
@@ -280,7 +282,23 @@ enum MusicSearchService {
         }
 
         // 同名情况下优先录音室版：Live / 伴奏 / 翻唱 / 网友自制 轻微降权
-        return isAlternateVersion(candidate.title) ? base * 0.94 : base
+        var s = isAlternateVersion(candidate.title) ? base * 0.94 : base
+
+        // 目录里的歌手是很强的上下文：对得上就加分，完全对不上就压下去
+        // （比如目录写着「周杰伦」，候选里陶喆的同名歌就直接跌到阈值以下）
+        if let hint = artistHint?.trimmingCharacters(in: .whitespaces), !hint.isEmpty,
+           let cArtist = candidate.artist, !cArtist.isEmpty {
+            let hSim = cArtist
+                .components(separatedBy: CharacterSet(charactersIn: "/、,&;；"))
+                .map { TextMatch.similarity(hint, $0.trimmingCharacters(in: .whitespaces)) }
+                .max() ?? 0
+            if hSim >= 0.55 {
+                s = min(1.0, s + 0.06)
+            } else if hSim < 0.20 {
+                s = max(0, s - 0.12)
+            }
+        }
+        return s
     }
 
     /// 是否是 Live / 伴奏 / 翻唱之类的非原版
@@ -303,13 +321,15 @@ enum MusicSearchService {
     ///   ② 网易云没有可信结果 → QQ音乐（补大厂版权，如周杰伦）
     ///   ③ 还没有 → iTunes（补欧美/外语专辑封面）
     /// 任何一级达标就收工，次源只在主源确实没有时出场。
-    static func bestMatch(title: String, artist: String?, minScore: Double? = nil) async -> Match? {
+    static func bestMatch(title: String, artist: String?, artistHint: String? = nil,
+                          minScore: Double? = nil) async -> Match? {
         let cleanTitle = title.trimmingCharacters(in: .whitespaces)
         guard !cleanTitle.isEmpty else { return nil }
 
         let kw = keyword(title: cleanTitle, artist: artist)
         let plain = cleanTitle
         let hasArtist = !(artist ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            || !(artistHint ?? "").trimmingCharacters(in: .whitespaces).isEmpty
         // 有歌手信息时阈值 0.70：正好卡住「歌名一模一样但根本不是同一个人」的版本
         // （那种只有 0.66 分），又不至于把 Live / 重新编曲版全部拒掉。
         let threshold = minScore ?? (hasArtist ? 0.70 : 0.78)
@@ -317,10 +337,11 @@ enum MusicSearchService {
         func acceptable(_ m: Match?) -> Bool { (m?.score ?? 0) >= threshold }
 
         // ① 网易云：先「歌手 + 歌名」，还不行再只用歌名
-        var best = pickBest(await search(keyword: kw, limit: 10), title: cleanTitle, artist: artist)
+        var best = pickBest(await search(keyword: kw, limit: 10),
+                            title: cleanTitle, artist: artist, artistHint: artistHint)
         if !acceptable(best), plain != kw {
             if let alt = pickBest(await search(keyword: plain, limit: 10),
-                                  title: cleanTitle, artist: artist),
+                                  title: cleanTitle, artist: artist, artistHint: artistHint),
                alt.score > (best?.score ?? 0) {
                 best = alt
             }
@@ -332,7 +353,7 @@ enum MusicSearchService {
             if pool.isEmpty, plain != kw {
                 pool += await qqSearch(keyword: plain, limit: 10)
             }
-            if let alt = pickBest(pool, title: cleanTitle, artist: artist),
+            if let alt = pickBest(pool, title: cleanTitle, artist: artist, artistHint: artistHint),
                alt.score > (best?.score ?? 0) {
                 best = alt
             }
@@ -341,7 +362,7 @@ enum MusicSearchService {
         // ③ iTunes 最后兜一次（欧美/外语专辑封面最全）
         if !acceptable(best) {
             if let alt = pickBest(await itunesSearch(keyword: kw, limit: 8),
-                                  title: cleanTitle, artist: artist),
+                                  title: cleanTitle, artist: artist, artistHint: artistHint),
                alt.score > (best?.score ?? 0) {
                 best = alt
             }
@@ -361,10 +382,11 @@ enum MusicSearchService {
         return b
     }
 
-    private static func pickBest(_ pool: [SongInfo], title: String, artist: String?) -> Match? {
+    private static func pickBest(_ pool: [SongInfo], title: String, artist: String?,
+                                 artistHint: String? = nil) -> Match? {
         var best: Match?
         for c in pool {
-            let s = score(candidate: c, title: title, artist: artist)
+            let s = score(candidate: c, title: title, artist: artist, artistHint: artistHint)
             if s > (best?.score ?? 0) {
                 best = Match(info: c, score: s)
             }

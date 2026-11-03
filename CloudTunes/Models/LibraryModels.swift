@@ -103,6 +103,9 @@ struct LibraryTrack: Identifiable, Codable, Hashable {
     var confidence: Double?
     /// 所在文件夹名（专辑兜底 / 重新刮削时恢复）
     var parentName: String?
+    /// 从库根到所在目录的文件夹名（不含库根），用来推断歌手/专辑
+    /// 「周杰伦/范特西/晴天.flac」→ ["周杰伦", "范特西"]
+    var folderPath: [String]? = nil
 
     var displayArtist: String { (artist?.isEmpty == false) ? artist! : "未知艺术家" }
     var displayAlbum: String { (album?.isEmpty == false) ? album! : "未知专辑" }
