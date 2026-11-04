@@ -28,17 +28,19 @@ enum WidgetBridge {
     }
 
     /// App 端调用：写入快照与封面
-    static func save(_ snapshot: Snapshot, cover: UIImage?) {
+    /// - Parameter replaceCover: 换歌时为 true。此时若这首歌没有封面，
+    ///   会把上一首的封面文件删掉，避免小组件一直显示上一首的图。
+    static func save(_ snapshot: Snapshot, cover: UIImage?, replaceCover: Bool = false) {
         guard let defaults else { return }
         if let data = try? JSONEncoder().encode(snapshot) {
             defaults.set(data, forKey: "nowplaying.snapshot")
         }
-        if let cover {
-            let target = containerURL?.appendingPathComponent("widget-cover.png")
-            if let url = target,
-               let data = cover.jpegData(compressionQuality: 0.88) ?? cover.pngData() {
-                try? data.write(to: url, options: .atomic)
-            }
+        guard let target = containerURL?.appendingPathComponent("widget-cover.png") else { return }
+        if let cover,
+           let data = cover.jpegData(compressionQuality: 0.88) ?? cover.pngData() {
+            try? data.write(to: target, options: .atomic)
+        } else if replaceCover {
+            try? FileManager.default.removeItem(at: target)
         }
     }
 

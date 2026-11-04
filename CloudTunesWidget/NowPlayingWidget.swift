@@ -62,6 +62,11 @@ struct NowPlayingWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     private var info: WidgetBridge.Snapshot? { entry.info }
+    private var isPlaying: Bool { info?.isPlaying == true }
+    private var statusText: String {
+        guard info != nil else { return "未在播放" }
+        return isPlaying ? "正在播放" : "已暂停"
+    }
 
     var body: some View {
         Group {
@@ -71,47 +76,57 @@ struct NowPlayingWidgetView: View {
             default:           mediumLayout
             }
         }
+        // 系统本身已经给了内容边距，这里只留很小的余量，功能区才够大
+        .padding(2)
         .widgetBackground()
-        .widgetURL(URL(string: "cloudtunes://open"))
+        .widgetURL(Self.link("open"))
     }
 
-    // MARK: 小尺寸：封面 + 正在播放
+    // MARK: 小尺寸：整块封面 + 底部叠字
 
     private var smallLayout: some View {
-        VStack(spacing: 6) {
-            coverThumb(size: 68, corner: 15)
+        ZStack(alignment: .bottomLeading) {
+            CoverArt(cover: entry.cover, corner: 20)
 
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(info?.isPlaying == true ? Color.green : Color.secondary.opacity(0.6))
-                    .frame(width: 5, height: 5)
-                Text(info == nil ? "未在播放" : (info!.isPlaying ? "正在播放" : "已暂停"))
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+            LinearGradient(colors: [Color.clear, Color.black.opacity(0.66)],
+                           startPoint: .center, endPoint: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(isPlaying ? Color.green : Color.white.opacity(0.8))
+                        .frame(width: 6, height: 6)
+                    Text(statusText)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.95))
+                }
+                Text(info?.title ?? "汤圆云音盒")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Text(info?.artist ?? "点按打开播放器")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .lineLimit(1)
             }
-
-            Text(info?.title ?? "汤圆云音盒")
-                .font(.footnote.weight(.bold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Text(info?.artist ?? "点按打开播放器")
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            .padding(.horizontal, 11)
+            .padding(.bottom, 10)
+            .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
         }
-        .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: 中尺寸（对标网易云音乐）：左封面卡 + 右两个功能区
+    // MARK: 中尺寸（对标网易云音乐）：左封面卡 + 右两个大功能区
 
     private var mediumLayout: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Link(destination: Self.link("player")) {
                 NowCoverCard(info: info, cover: entry.cover)
             }
 
-            VStack(spacing: 10) {
+            VStack(spacing: 9) {
                 Link(destination: Self.link("favorites")) {
                     FunctionButton(icon: "heart.fill", title: "我喜欢的音乐")
                 }
@@ -120,8 +135,8 @@ struct NowPlayingWidgetView: View {
                 }
             }
             .frame(maxHeight: .infinity)
+            .frame(width: 132)
         }
-        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -129,55 +144,61 @@ struct NowPlayingWidgetView: View {
 
     private var largeLayout: some View {
         VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                coverThumb(size: 58, corner: 13)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(info?.title ?? "还没有播放")
-                        .font(.callout.weight(.bold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(info?.artist ?? "点下面的按钮开始听歌")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(info?.isPlaying == true ? Color.green : Color.secondary.opacity(0.5))
-                            .frame(width: 5, height: 5)
-                        Text(info == nil ? "未在播放" : (info!.isPlaying ? "正在播放" : "已暂停"))
-                            .font(.system(size: 9, weight: .semibold))
+            Link(destination: Self.link("player")) {
+                HStack(spacing: 12) {
+                    CoverThumb(cover: entry.cover, size: 66, corner: 15)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(info?.title ?? "还没有播放")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(info?.artist ?? "点下面的按钮开始听歌")
+                            .font(.system(size: 12))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(isPlaying ? Color.green : Color.secondary.opacity(0.5))
+                                .frame(width: 6, height: 6)
+                            Text(statusText)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    Spacer(minLength: 0)
+                    Image(systemName: isPlaying ? "waveform" : "play.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.95, green: 0.42, blue: 0.38))
+                        .padding(.trailing, 2)
                 }
-                Spacer(minLength: 0)
             }
 
             Rectangle()
                 .fill(Color.black.opacity(0.08))
                 .frame(height: 0.5)
 
-            VStack(spacing: 10) {
-                HStack(spacing: 10) {
+            VStack(spacing: 9) {
+                HStack(spacing: 9) {
                     Link(destination: Self.link("favorites")) {
-                        FunctionButton(icon: "heart.fill", title: "我喜欢的音乐", height: 52)
+                        FunctionButton(icon: "heart.fill", title: "我喜欢的音乐")
                     }
                     Link(destination: Self.link("recent")) {
-                        FunctionButton(icon: "clock", title: "最近播放", height: 52)
+                        FunctionButton(icon: "clock", title: "最近播放")
                     }
                 }
-                HStack(spacing: 10) {
+                HStack(spacing: 9) {
                     Link(destination: Self.link("shuffle")) {
-                        FunctionButton(icon: "shuffle", title: "随机播放", height: 52)
+                        FunctionButton(icon: "shuffle", title: "随机播放")
                     }
                     Link(destination: Self.link("resume")) {
-                        FunctionButton(icon: "play.circle.fill", title: "继续播放", height: 52)
+                        FunctionButton(icon: "play.circle.fill", title: "继续播放")
                     }
                 }
             }
+            .frame(maxHeight: .infinity)
 
             Spacer(minLength: 0)
         }
-        .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -186,41 +207,49 @@ struct NowPlayingWidgetView: View {
     private static func link(_ host: String) -> URL {
         URL(string: "cloudtunes://\(host)") ?? URL(string: "cloudtunes://open")!
     }
+}
 
-    /// 封面（没有就用 App 图标虚化做占位），调用方负责 frame
-    @ViewBuilder
-    private func coverThumb(size: CGFloat, corner: CGFloat) -> some View {
-        if let cover = entry.cover {
-            Color.clear
-                .overlay { Image(uiImage: cover).resizable().scaledToFill() }
-                .clipped()
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-                .shadow(color: .black.opacity(0.18), radius: 5, y: 2)
-        } else if let icon = WidgetTheme.appIcon {
-            Color.clear
-                .overlay { Image(uiImage: icon).resizable().scaledToFill() }
-                .clipped()
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-                .overlay(Color.white.opacity(0.15))
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: max(14, size * 0.28)))
-                        .foregroundStyle(.white.opacity(0.95))
-                }
-        } else {
-            RoundedRectangle(cornerRadius: corner, style: .continuous)
-                .fill(Color.black.opacity(0.08))
-                .frame(width: size, height: size)
-                .overlay { Image(systemName: "music.note").foregroundStyle(.secondary) }
+// MARK: - 封面（有封面用当前歌曲封面，没有才用品牌渐变，绝不用 App 图标）
+
+private struct CoverArt: View {
+    let cover: UIImage?
+    var corner: CGFloat = 16
+
+    var body: some View {
+        ZStack {
+            if let cover {
+                Color.clear
+                    .overlay { Image(uiImage: cover).resizable().scaledToFill() }
+                    .clipped()
+            } else {
+                LinearGradient(colors: [Color(red: 0.99, green: 0.63, blue: 0.52),
+                                        Color(red: 0.95, green: 0.44, blue: 0.40)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                Image(systemName: "music.note")
+                    .font(.system(size: 34, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
         }
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+    }
+}
+
+/// 固定尺寸封面缩略图（大尺寸正在播放条用）
+private struct CoverThumb: View {
+    let cover: UIImage?
+    let size: CGFloat
+    var corner: CGFloat = 14
+
+    var body: some View {
+        CoverArt(cover: cover, corner: corner)
+            .frame(width: size, height: size)
+            .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
     }
 }
 
 // MARK: - 中尺寸左侧封面卡（对标网易云「每日推荐」卡）
 
-/// 封面填满整张卡，左下角浮层显示状态与歌名；没在播时用 App 图标虚化 + 音符
+/// 封面填满整张卡，左下角浮层显示状态与歌名；没在播时用品牌渐变 + 音符
 private struct NowCoverCard: View {
     let info: WidgetBridge.Snapshot?
     let cover: UIImage?
@@ -231,33 +260,11 @@ private struct NowCoverCard: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            Rectangle().fill(Color.white.opacity(0.5))
+            CoverArt(cover: cover, corner: 18)
 
-            if let cover {
-                Color.clear
-                    .overlay { Image(uiImage: cover).resizable().scaledToFill() }
-                    .clipped()
-            } else if let icon = WidgetTheme.appIcon {
-                Color.clear
-                    .overlay { Image(uiImage: icon).resizable().scaledToFill() }
-                    .clipped()
-                    .overlay(Color.white.opacity(0.18))
-                Image(systemName: "music.note")
-                    .font(.system(size: 30, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                LinearGradient(colors: [Color(red: 0.98, green: 0.62, blue: 0.52),
-                                        Color(red: 0.95, green: 0.45, blue: 0.38)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                Image(systemName: "music.note")
-                    .font(.system(size: 30, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            LinearGradient(colors: [Color.clear, Color.black.opacity(0.58)],
+            LinearGradient(colors: [Color.clear, Color.black.opacity(0.6)],
                            startPoint: .center, endPoint: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
@@ -265,29 +272,28 @@ private struct NowCoverCard: View {
                         .fill(info?.isPlaying == true ? Color.green : Color.white.opacity(0.85))
                         .frame(width: 5, height: 5)
                     Text(statusText)
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 9.5, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.95))
                 }
                 Text(info?.title ?? "打开播放器")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 if let artist = info?.artist, !artist.isEmpty {
                     Text(artist)
-                        .font(.system(size: 9))
+                        .font(.system(size: 9.5))
                         .foregroundStyle(.white.opacity(0.88))
                         .lineLimit(1)
                 }
             }
-            .padding(9)
+            .padding(10)
+            .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.5), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -296,26 +302,25 @@ private struct NowCoverCard: View {
 private struct FunctionButton: View {
     let icon: String
     let title: String
-    var height: CGFloat = 48
 
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color(red: 0.92, green: 0.42, blue: 0.34))
-                .frame(width: 30, height: 30)
-                .background(Color.white.opacity(0.9), in: Circle())
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(0.92), in: Circle())
             Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.black.opacity(0.80))
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(Color.black.opacity(0.82))
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 11)
-        .frame(maxWidth: .infinity)
-        .frame(height: height)
-        .background(Color.white.opacity(0.55),
-                    in: RoundedRectangle(cornerRadius: height > 44 ? 15 : 14, style: .continuous))
+        .padding(.horizontal, 9)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.white.opacity(0.58),
+                    in: RoundedRectangle(cornerRadius: 17, style: .continuous))
     }
 }
 

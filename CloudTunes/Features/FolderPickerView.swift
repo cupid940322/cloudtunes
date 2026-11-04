@@ -15,6 +15,22 @@ struct FolderPickerView: View {
     @State private var isLoading = false
     @State private var errorText = ""
     @State private var includeSubfolders = true
+    @ObservedObject private var store = LibraryStore.shared
+
+    /// 这个网盘里已入库的文件夹 ID：音乐库根 + 已经扫进库里的歌曲所在目录
+    private var inLibraryFolderIDs: Set<String> {
+        var ids = Set<String>()
+        for lib in store.libraries where lib.providerKind == kind {
+            ids.insert(lib.folderID)
+            for t in lib.tracks { ids.insert(t.parentID) }
+        }
+        return ids
+    }
+
+    /// 当前所在文件夹是否已经是某个音乐库的根
+    private var isCurrentFolderALibrary: Bool {
+        store.libraries.contains { $0.providerKind == kind && $0.folderID == currentID }
+    }
 
     private var currentID: String { path.last?.id ?? ProviderRegistry.rootID(of: kind) }
     private var currentName: String {
@@ -60,7 +76,9 @@ struct FolderPickerView: View {
     }
 
     private var content: some View {
-        ScrollView {
+        // 一次性算好已入库集合，别每行都重算（大库有几千首）
+        let inLibrary = inLibraryFolderIDs
+        return ScrollView {
             VStack(spacing: 16) {
                 // 路径面包屑
                 if !path.isEmpty {
@@ -103,7 +121,17 @@ struct FolderPickerView: View {
                             .foregroundStyle(Theme.accentGradient)
                     }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(currentName).font(.headline).lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(currentName).font(.headline).lineLimit(1)
+                            if isCurrentFolderALibrary {
+                                Label("已入库", systemImage: "checkmark.circle.fill")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Theme.accent)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Theme.accent.opacity(0.12), in: Capsule())
+                            }
+                        }
                         Text("本层 \(audioCount) 首音乐 · \(folders.count) 个子文件夹")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -139,7 +167,15 @@ struct FolderPickerView: View {
                                             .font(.subheadline)
                                             .foregroundStyle(.primary)
                                             .lineLimit(1)
-                                        Spacer()
+                                        Spacer(minLength: 4)
+                                        if inLibrary.contains(folder.id) {
+                                            Label("已入库", systemImage: "checkmark.circle.fill")
+                                                .font(.system(size: 9, weight: .semibold))
+                                                .foregroundStyle(Theme.accent)
+                                                .padding(.horizontal, 7)
+                                                .padding(.vertical, 3)
+                                                .background(Theme.accent.opacity(0.12), in: Capsule())
+                                        }
                                         Image(systemName: "chevron.right")
                                             .font(.system(size: 12, weight: .semibold))
                                             .foregroundStyle(.tertiary)
@@ -177,16 +213,28 @@ struct FolderPickerView: View {
             Button {
                 pickCurrent()
             } label: {
-                HStack {
-                    Image(systemName: "plus.circle.fill")
-                    Text(audioCount == 0 && folders.isEmpty ? "添加为空音乐库" : "添加此文件夹")
+                HStack(spacing: 6) {
+                    Image(systemName: isCurrentFolderALibrary ? "checkmark.circle.fill" : "plus.circle.fill")
+                    Text(isCurrentFolderALibrary
+                         ? "已在音乐库"
+                         : (audioCount == 0 && folders.isEmpty ? "添加为空音乐库" : "添加此文件夹"))
                         .fontWeight(.semibold)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 13)
-                .background(Theme.accentGradient, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .foregroundStyle(.white)
+                .background {
+                    if isCurrentFolderALibrary {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Theme.accent.opacity(0.14))
+                    } else {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Theme.accentGradient)
+                    }
+                }
+                .foregroundStyle(isCurrentFolderALibrary ? Theme.accent : Color.white)
             }
+            .buttonStyle(.plain)
+            .disabled(isCurrentFolderALibrary)
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)

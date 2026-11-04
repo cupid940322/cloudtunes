@@ -283,6 +283,8 @@ final class PlayerManager: NSObject, ObservableObject {
             nowPlayingTitle = updated.title
             // 封面文件是按歌曲 ID 覆盖写的，路径没变内容变了，旧缓存图要清掉
             ArtworkCache.shared.evict(named: updated.artworkFile)
+            // 封面内容变了，让下次推送重新读盘写进 App Group
+            widgetCoverKey = nil
             // 强制重写锁屏与小组件：快照签名里没有歌名/歌手，不清签名会被节流直接跳过
             widgetLastSignature = ""
             updateNowPlaying()
@@ -302,8 +304,10 @@ final class PlayerManager: NSObject, ObservableObject {
         widgetLastSignature = signature
 
         var cover: UIImage?
+        var replaceCover = false
         if widgetCoverKey != track.id {
             widgetCoverKey = track.id
+            replaceCover = true
             cover = MetadataScraper.artworkURL(file: track.artworkFile)
                 .flatMap { UIImage(contentsOfFile: $0.path) }
         }
@@ -317,7 +321,7 @@ final class PlayerManager: NSObject, ObservableObject {
             total: queue.count,
             updatedAt: Date()
         )
-        WidgetBridge.save(snapshot, cover: cover)
+        WidgetBridge.save(snapshot, cover: cover, replaceCover: replaceCover)
         WidgetBridge.reload()
     }
 
