@@ -162,6 +162,58 @@ enum AudioProbe {
         return Int(value.rounded())
     }
 
+    // MARK: - 噪声判定
+
+    /// 数据段看起来是白噪声吗？
+    ///
+    /// 判断依据（只看前 1.5 秒，代价很小）：16bit PCM 正常音乐相邻采样的相关性
+    /// 一般在 0.9 以上、过零率远低于 0.5；而「头对但数据是随机数」的文件
+    /// （损坏、加密、下载乱序）相关性接近 0、过零率接近 0.5，各频点能量也均匀。
+    /// 这种情况任何播放器都只能放出噪声，与解码器无关。
+    static func looksLikeNoise(_ url: URL, info: Info) -> Bool {
+        guard info.bitsPerSample == 16,
+              info.channels >= 1, info.channels <= 2,
+              info.dataOffset > 0 else { return false }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: UInt64(info.dataOffset))) != nil,
+              let block = try? handle.read(upToCount: 96 * 1024),
+              block.count >= 16 * 1024 else { return false }
+
+        var samples = [Double]()
+        samples.reserveCapacity(block.count / 2)
+        var i = 0
+        while i + 1 < block.count {
+            let lo = UInt16(block[block.startIndex + i])
+            let hi = UInt16(block[block.startIndex + i + 1])
+            samples.append(Double(Int16(bitPattern: lo | (hi << 8))))
+            i += 2
+        }
+        guard samples.count > 4096 else { return false }
+
+        var mean = 0.0
+        for v in samples { mean += v }
+        mean /= Double(samples.count)
+
+        var num = 0.0, d1 = 0.0, d2 = 0.0, power = 0.0, zeroCross = 0
+        for idx in samples.indices {
+            let x = samples[idx] - mean
+            power += x * x
+            if idx > 0 {
+                let y = samples[idx - 1] - mean
+                num += x * y
+                d1 += y * y
+                d2 += x * x
+                if (samples[idx - 1] < 0) != (samples[idx] < 0) { zeroCross += 1 }
+            }
+        }
+        let corr = (d1 > 0 && d2 > 0) ? num / (d1 * d2).squareRoot() : 0
+        let zcr = Double(zeroCross) / Double(samples.count)
+        let rms = (power / Double(samples.count)).squareRoot()
+
+        return rms > 300 && corr < 0.12 && zcr > 0.40
+    }
+
     // MARK: - 字节读取（小端）
 
     private static func ascii(_ d: Data, _ o: Int, _ n: Int) -> String {

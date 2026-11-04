@@ -551,6 +551,9 @@ final class PlayerManager: NSObject, ObservableObject {
             // 读文件头，把「这到底是什么」说清楚（播放页顶部会显示一行）
             let info = AudioProbe.probe(local)
             if let info, !info.summary.isEmpty { audioInfo = info.summary }
+            // 头对、数据是随机数：损坏 / 加密 / 下载乱序，任何播放器都只能出噪声
+            let noisy = info.map { AudioProbe.looksLikeNoise(local, info: $0) } ?? false
+            if noisy, let info { audioInfo = "\(info.summary) · 数据是白噪声" }
 
             // 头写 PCM、数据是 DTS/AC3：这种「假 wav」谁也救不了，直接讲明白
             if let info, let disguised = info.disguised {
@@ -579,9 +582,15 @@ final class PlayerManager: NSObject, ObservableObject {
                 pendingSeek = 0
                 pcmPlayer = pcm
                 duration = dur
-                pcm.play()
-                isPlaying = true
-                playNote = ""
+                if noisy {
+                    // 不主动放噪声，点播放按钮仍可自己验证（PCM 通道已经载入好了）
+                    isPlaying = false
+                    playNote = "这段音频的数据是白噪声（相邻采样几乎不相关、各频段能量均匀），文件本身已损坏或被加密；换任何播放器都是噪声，只能重新获取音源。"
+                } else {
+                    pcm.play()
+                    isPlaying = true
+                    playNote = ""
+                }
                 updateNowPlaying()
                 LibraryStore.shared.markPlayed(track.id)
                 return
