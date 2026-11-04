@@ -101,7 +101,7 @@ enum MusicSearchService {
 
     /// 批量取网易云歌曲详情。
     ///
-    /// 网易云的**搜索接口不返回封面**（`album.picUrl` 压根没有这个字段），
+    /// 网易云的**搜索接口不返回封面**（`album.picUrl` 不存在），
     /// 必须拿歌曲 id 再查详情才有。这里一次带多个 id，给手动匹配列表补封面用。
     static func neteaseDetails(ids: [Int]) async -> [Int: SongInfo] {
         let uniq = Array(Set(ids.filter { $0 > 0 })).prefix(20)
