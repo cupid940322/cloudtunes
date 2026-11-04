@@ -10,6 +10,7 @@ struct FileBrowserView: View {
     @State private var errorText = ""
     @State private var isAdding = false
     @State private var toast = ""
+    @ObservedObject private var store = LibraryStore.shared
 
     private var currentFolderID: String {
         path.last?.id ?? ProviderRegistry.rootID(of: kind)
@@ -20,6 +21,21 @@ struct FileBrowserView: View {
     }
     private var audioFiles: [CloudFile] { MusicScanner.filterAudio(files) }
     private var audioCount: Int { audioFiles.count }
+
+    /// 这个网盘里已入库的文件夹 ID：音乐库根 + 已经扫进库里的歌曲所在目录
+    private var inLibraryFolderIDs: Set<String> {
+        var ids = Set<String>()
+        for lib in store.libraries where lib.providerKind == kind {
+            ids.insert(lib.folderID)
+            for t in lib.tracks { ids.insert(t.parentID) }
+        }
+        return ids
+    }
+
+    /// 当前所在文件夹是否已是某个音乐库的根
+    private var isCurrentFolderALibrary: Bool {
+        store.libraries.contains { $0.providerKind == kind && $0.folderID == currentFolderID }
+    }
 
     var body: some View {
         Group {
@@ -53,7 +69,9 @@ struct FileBrowserView: View {
     }
 
     private var content: some View {
-        ScrollView {
+        // 一次性算好已入库集合，别每行都重算（大库有几千首）
+        let inLibrary = inLibraryFolderIDs
+        return ScrollView {
             VStack(spacing: 14) {
                 if !path.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -84,7 +102,7 @@ struct FileBrowserView: View {
                 VStack(spacing: 0) {
                     ForEach(files.indices, id: \.self) { idx in
                             let file = files[idx]
-                        row(file)
+                        row(file, inLibrary: inLibrary)
                         if idx < files.count - 1 {
                             Divider().padding(.leading, 56)
                         }
@@ -130,9 +148,9 @@ struct FileBrowserView: View {
                     if isAdding {
                         ProgressView().scaleEffect(0.7)
                     } else {
-                        Image(systemName: "plus.square.on.square")
+                        Image(systemName: isCurrentFolderALibrary ? "checkmark.circle.fill" : "plus.square.on.square")
                     }
-                    Text(isAdding ? "添加中…" : "设为音乐库")
+                    Text(isAdding ? "添加中…" : (isCurrentFolderALibrary ? "已在音乐库" : "设为音乐库"))
                 }
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 132)
@@ -142,10 +160,10 @@ struct FileBrowserView: View {
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
                         .strokeBorder(Theme.hairline, lineWidth: 0.5)
                 )
-                .foregroundStyle(.primary)
+                .foregroundStyle(isCurrentFolderALibrary ? Theme.accent : .primary)
             }
             .buttonStyle(.plain)
-            .disabled(isAdding)
+            .disabled(isAdding || isCurrentFolderALibrary)
         }
         .padding(.horizontal, Theme.pagePadding)
         .padding(.vertical, 8)
@@ -153,26 +171,26 @@ struct FileBrowserView: View {
         .overlay(alignment: .top) { Divider() }
     }
 
-    private func row(_ file: CloudFile) -> some View {
+    private func row(_ file: CloudFile, inLibrary: Set<String>) -> some View {
         Group {
             if file.isFolder {
                 Button {
                     path.append(file)
                     load()
-                } label: { rowContent(file) }
+                } label: { rowContent(file, inLibrary: inLibrary) }
                     .buttonStyle(.plain)
             } else if MusicScanner.isAudioFile(file.name) {
                 Button {
                     play(file)
-                } label: { rowContent(file) }
+                } label: { rowContent(file, inLibrary: inLibrary) }
                     .buttonStyle(.plain)
             } else {
-                rowContent(file)
+                rowContent(file, inLibrary: inLibrary)
             }
         }
     }
 
-    private func rowContent(_ file: CloudFile) -> some View {
+    private func rowContent(_ file: CloudFile, inLibrary: Set<String>) -> some View {
         HStack(spacing: 12) {
             Image(systemName: file.isFolder ? "folder.fill"
                     : (MusicScanner.isAudioFile(file.name) ? "music.note" : "doc"))
@@ -194,6 +212,15 @@ struct FileBrowserView: View {
             }
             Spacer(minLength: 4)
             if file.isFolder {
+                // 已入库标记：这个文件夹是音乐库根，或里面的歌已经扫进库
+                if inLibrary.contains(file.id) {
+                    Label("已入库", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Theme.accent.opacity(0.12), in: Capsule())
+                }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.quaternary)
