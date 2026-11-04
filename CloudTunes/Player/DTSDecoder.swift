@@ -37,7 +37,10 @@ final class DTSDecoder {
     private(set) var bitRate: Int = 0
     /// 最近一帧的实际输出声道数（1 或 2；>2 说明 downmix 没生效）
     private(set) var outputChannels: Int = 2
+    /// 一帧的**字节数**（切帧用）
     private(set) var frameLength: Int = 0
+    /// 一帧的**样本数**（诊断用，正常等于 frameLength 换算出的时长）
+    private(set) var samplesPerFrame: Int = 0
 
     init?() {
         guard let s = dca_init(0) else { return nil }
@@ -48,23 +51,28 @@ final class DTSDecoder {
         if let state { dca_free(state) }
     }
 
-    /// 解析帧头，返回整帧字节数（0 表示这段不是有效的 DTS 帧，需要往后挪再试）
+    /// 解析帧头，返回整帧**字节数**（0 表示这段不是有效的 DTS 帧，需要往后挪再试）
+    ///
+    /// 注意别混淆两个数：`dca_syncinfo` 的返回值是帧的字节数（这个文件是 4096），
+    /// 而出参 `frame_length` 是帧内**样本数**（= sample_blocks × 32 = 1024）。
+    /// 之前把 1024 当字节数去切帧，等于每帧只喂进四分之一，于是「能听出旋律但全是杂音」。
     func syncInfo(_ header: [UInt8]) -> Int {
         guard let state, header.count >= Self.headerSize else { return 0 }
         for i in 0..<Self.headerSize { scratch[4 + i] = header[i] }
         var f: Int32 = 0
         var sampleRate: Int32 = 0
         var bitRate: Int32 = 0
-        var frameLength: Int32 = 0
-        let length = scratch.withUnsafeMutableBufferPointer { ptr -> Int32 in
+        var samplesPerFrame: Int32 = 0
+        let byteCount = scratch.withUnsafeMutableBufferPointer { ptr -> Int32 in
             guard let base = ptr.baseAddress else { return 0 }
-            return Int32(dca_syncinfo(state, base + 4, &f, &sampleRate, &bitRate, &frameLength))
+            return Int32(dca_syncinfo(state, base + 4, &f, &sampleRate, &bitRate, &samplesPerFrame))
         }
-        guard length > 0 else { return 0 }
+        guard byteCount > 0 else { return 0 }
         self.sampleRate = Int(sampleRate)
         self.bitRate = Int(bitRate)
-        self.frameLength = Int(frameLength)
-        return Int(length)
+        self.frameLength = Int(byteCount)          // 字节数，切帧用这个
+        self.samplesPerFrame = Int(samplesPerFrame) // 样本数，只做校验/诊断
+        return Int(byteCount)
     }
 
     /// 解一整帧，返回按声道分开的 float 样本（channel-major，每个声道 256×blocks 个）

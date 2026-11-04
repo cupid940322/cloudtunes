@@ -20,6 +20,8 @@ final class DTSStreamPlayer: NSObject {
     var onReady: (() -> Void)?
     var onFinish: (() -> Void)?
     var onError: ((String) -> Void)?
+    /// 第一帧解码成功后回报一次真实格式（帧长 / 样本数 / 输出声道），显示在播放页
+    var onFormat: ((String) -> Void)?
 
     private(set) var isPlaying = false
     private(set) var duration: TimeInterval = 0
@@ -53,6 +55,7 @@ final class DTSStreamPlayer: NSObject {
     private var streamEnded = false
     private var retryScheduled = false
     private var infoCaptured = false
+    private var formatReported = false
 
     // MARK: 网络
 
@@ -124,6 +127,7 @@ final class DTSStreamPlayer: NSObject {
             self.streamEnded = false
             self.retryScheduled = false
             self.infoCaptured = false
+            self.formatReported = false
         }
 
         var req = URLRequest(url: url)
@@ -284,6 +288,11 @@ final class DTSStreamPlayer: NSObject {
             dropBytes(frameLength)
             frameLength = 0
             if let planar = decoder.decode(frame: frame) {
+                if !formatReported {
+                    formatReported = true
+                    let text = "DTS \(decoder.frameLength)B/帧 · \(planar[0].count) 样本 · \(decoder.outputChannels)ch"
+                    dispatchToMain { [weak self] in self?.onFormat?(text) }
+                }
                 accumulate(planar: planar, decoder: decoder)
             }
         }

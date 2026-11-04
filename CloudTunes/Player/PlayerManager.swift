@@ -546,6 +546,7 @@ final class PlayerManager: NSObject, ObservableObject {
         let dts = DTSStreamPlayer()
         dts.onTime = { [weak self] t in self?.currentTime = t }
         dts.onDuration = { [weak self] d in self?.duration = d }
+        dts.onFormat = { [weak self] text in self?.audioInfo = text }
         dts.onReady = { [weak self] in
             guard let self, self.playNote.hasPrefix("DTS") else { return }
             self.playNote = ""
