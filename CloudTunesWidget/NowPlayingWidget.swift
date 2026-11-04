@@ -135,7 +135,7 @@ struct NowPlayingWidgetView: View {
                 }
             }
             .frame(maxHeight: .infinity)
-            .frame(width: 132)
+            .frame(width: 148)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -186,6 +186,7 @@ struct NowPlayingWidgetView: View {
                         FunctionButton(icon: "clock", title: "最近播放")
                     }
                 }
+                .frame(height: 88)
                 HStack(spacing: 9) {
                     Link(destination: Self.link("shuffle")) {
                         FunctionButton(icon: "shuffle", title: "随机播放")
@@ -194,8 +195,8 @@ struct NowPlayingWidgetView: View {
                         FunctionButton(icon: "play.circle.fill", title: "继续播放")
                     }
                 }
+                .frame(height: 88)
             }
-            .frame(maxHeight: .infinity)
 
             Spacer(minLength: 0)
         }
@@ -306,9 +307,9 @@ private struct FunctionButton: View {
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color(red: 0.92, green: 0.42, blue: 0.34))
-                .frame(width: 36, height: 36)
+                .frame(width: 34, height: 34)
                 .background(Color.white.opacity(0.92), in: Circle())
             Text(title)
                 .font(.system(size: 13.5, weight: .semibold))
@@ -317,7 +318,7 @@ private struct FunctionButton: View {
                 .minimumScaleFactor(0.75)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.white.opacity(0.58),
                     in: RoundedRectangle(cornerRadius: 17, style: .continuous))
