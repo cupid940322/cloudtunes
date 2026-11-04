@@ -76,27 +76,53 @@ enum MusicSearchService {
 
     /// 取网易云歌曲详情（封面 + 规范化专辑/艺术家）
     static func neteaseDetail(id: Int) async -> SongInfo? {
-        guard let url = URL(string: "https://music.163.com/api/song/detail?ids=[\(id)]") else { return nil }
+        await neteaseDetails(ids: [id])[id]
+    }
+
+    /// 解析详情接口的一首歌。
+    ///
+    /// **坑**：同一个 `/api/song/detail` 接口，单查和批量都返回**老字段名**
+    /// `album` / `artists` / `duration`，并不是网易云新版 API 的 `al` / `ar` / `dt`。
+    /// 之前只解析 `al`，导致封面 / 专辑 / 时长全部拿到 nil（封面就一直加载不出来）。
+    private static func parseDetail(_ s: [String: Any]) -> SongInfo {
+        let al = (s["al"] as? [String: Any]) ?? (s["album"] as? [String: Any])
+        let ar = (s["ar"] as? [[String: Any]]) ?? (s["artists"] as? [[String: Any]])
+        var pic = al?["picUrl"] as? String
+        if let p = pic, p.hasPrefix("http://") { pic = "https://" + p.dropFirst(7) }
+        let ms = (s["dt"] as? Double) ?? (s["duration"] as? Double)
+        return SongInfo(title: s["name"] as? String,
+                        artist: ar?.first?["name"] as? String,
+                        album: al?["name"] as? String,
+                        coverURL: pic,
+                        neteaseID: s["id"] as? Int,
+                        duration: ms.map { $0 / 1000 },
+                        source: "网易云")
+    }
+
+    /// 批量取网易云歌曲详情。
+    ///
+    /// 网易云的**搜索接口不返回封面**（`album.picUrl` 压根没有这个字段），
+    /// 必须拿歌曲 id 再查详情才有。这里一次带多个 id，给手动匹配列表补封面用。
+    static func neteaseDetails(ids: [Int]) async -> [Int: SongInfo] {
+        let uniq = Array(Set(ids.filter { $0 > 0 })).prefix(20)
+        guard !uniq.isEmpty else { return [:] }
+        let list = uniq.map(String.init).joined(separator: ",")
+        var comps = URLComponents(string: "https://music.163.com/api/song/detail")!
+        comps.queryItems = [.init(name: "ids", value: "[\(list)]")]   // 方括号交给 URLComponents 转义
+        guard let url = comps.url else { return [:] }
         var req = URLRequest(url: url)
         req.timeoutInterval = 8
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
         req.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let songs = obj["songs"] as? [[String: Any]],
-              let s = songs.first else { return nil }
-        let al = s["al"] as? [String: Any]
-        let ar = s["ar"] as? [[String: Any]]
-        var pic = al?["picUrl"] as? String
-        if let p = pic, p.hasPrefix("http://") { pic = "https://" + p.dropFirst(7) }
-        let ms = s["dt"] as? Double
-        return SongInfo(title: s["name"] as? String,
-                        artist: ar?.first?["name"] as? String,
-                        album: al?["name"] as? String,
-                        coverURL: pic,
-                        neteaseID: id,
-                        duration: ms.map { $0 / 1000 },
-                        source: "网易云")
+              let songs = obj["songs"] as? [[String: Any]] else { return [:] }
+        var out: [Int: SongInfo] = [:]
+        for s in songs {
+            let info = parseDetail(s)
+            if let id = info.neteaseID { out[id] = info }
+        }
+        return out
     }
 
     /// 网易云歌词（LRC 格式）
@@ -247,6 +273,25 @@ enum MusicSearchService {
             guard !seen.contains(key) else { continue }
             seen.insert(key)
             unique.append(s)
+        }
+
+        // 网易云的搜索接口不返回封面（album.picUrl 不存在），批量查一次详情补上。
+        // 不补的话「在线重新匹配」列表里网易云候选永远只有灰块，QQ音乐 / iTunes 有图。
+        let needIDs = unique
+            .filter { $0.source == "网易云" && ($0.coverURL ?? "").isEmpty }
+            .compactMap(\.neteaseID)
+        if !needIDs.isEmpty {
+            let details = await neteaseDetails(ids: needIDs)
+            if !details.isEmpty {
+                unique = unique.map { s in
+                    guard s.source == "网易云", let id = s.neteaseID, let d = details[id] else { return s }
+                    var v = s
+                    if (v.coverURL ?? "").isEmpty { v.coverURL = d.coverURL }
+                    if (v.album ?? "").isEmpty, let a = d.album { v.album = a }
+                    if v.duration == nil { v.duration = d.duration }
+                    return v
+                }
+            }
         }
         return unique
     }
