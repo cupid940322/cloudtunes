@@ -460,6 +460,10 @@ final class PlayerManager: NSObject, ObservableObject {
                 }
                 try Task.checkCancellation()
 
+                // 注意：不能把 `var info` 直接捕获进 MainActor.run —— Swift 5.9 会报
+                // `reference to captured var 'info' in concurrently-executing code`。
+                // 先取成不可变的 String 快照再进闭包。
+                let infoSummary = info?.summary ?? ""
                 if let info, info.dts != .none {
                     await self.startDTSPlayback(track: track, index: index, link: link, info: info)
                 } else {
@@ -467,7 +471,7 @@ final class PlayerManager: NSObject, ObservableObject {
                         // 在取直链期间用户又切了别的歌
                         guard self.currentIndex == index, !Task.isCancelled else { return }
                         // 普通 PCM 也把格式显示出来，方便确认「这到底是 DTS 还是真 PCM」
-                        self.audioInfo = info?.summary ?? ""
+                        self.audioInfo = infoSummary
                         self.startStreaming(track: track, index: index, link: link)
                         LibraryStore.shared.markPlayed(track.id)
                     }
@@ -513,8 +517,12 @@ final class PlayerManager: NSObject, ObservableObject {
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             guard item.status == .failed else { return }
             let reason = item.error?.localizedDescription ?? "无法读取音频流"
+            // 不能在内层 Task 里直接用 weak self —— Swift 5.9 会报
+            // `reference to captured var 'self' in concurrently-executing code`。
+            // 这里先绑定成不可变的强引用 strongSelf 再捕获。
+            guard let strongSelf = self else { return }
             Task { @MainActor in
-                self?.fallbackToCache(track: track, index: index, link: link, reason: reason)
+                strongSelf.fallbackToCache(track: track, index: index, link: link, reason: reason)
             }
         }
 
