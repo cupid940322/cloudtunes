@@ -15,17 +15,19 @@ enum MusicScanner {
         return audioExtensions.contains(ext.lowercased())
     }
 
-    /// 必须先下载到本地再播的无压缩 PCM 格式。
+    /// 无损无压缩 PCM 容器（wav / aiff / caf 系）。
     ///
-    /// AVPlayer 直接喂远程 WAV（HTTP 渐进式）时，走的是 AudioFileStream 那套解析，
-    /// 对 RIFF 的支持比本地 AudioFile 差很多：24bit / 32bit float / WAVE_FORMAT_EXTENSIBLE
-    /// 的文件会被按错误的位深与字节序解读，结果就是一片白噪声（还能"正常"播放、不报错）。
-    /// 这类格式一律先落到本地缓存，交给本地解码器读，声音才正常。
-    static let localFirstExtensions: Set<String> = ["wav", "aiff", "aif", "aifc", "caf"]
+    /// 这类文件有两个特殊之处，需要在播放前拦截探测：
+    /// 1. 可能是 **DTS-CD 抓轨**伪装的——容器头写着 16bit PCM，data 区里其实是
+    ///    DTS 码流（14bit 或 16bit 打包）。直接交给 AVPlayer 就是一片白噪声。
+    /// 2. 24bit / 32bit float / WAVE_FORMAT_EXTENSIBLE 等变体，AudioFileStream
+    ///    远程解析容易按错位深解读。
+    /// 所以 PCM 容器一律先取 128KB 前缀探测，再决定走 DTS 解码还是直链播放。
+    static let pcmContainerExtensions: Set<String> = ["wav", "aiff", "aif", "aifc", "caf"]
 
-    static func needsLocalPlayback(_ name: String) -> Bool {
+    static func isPCMContainer(_ name: String) -> Bool {
         guard let ext = name.split(separator: ".").last else { return false }
-        return localFirstExtensions.contains(ext.lowercased())
+        return pcmContainerExtensions.contains(ext.lowercased())
     }
 
     /// 从目录列表中筛出音频文件

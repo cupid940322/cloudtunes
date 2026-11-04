@@ -50,6 +50,15 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # libdca（DTS 解码）是 CI 现编的静态库，本地没有也能编译（bridging header 里
+        # 用 __has_include 做了 fallback 声明），只有 DTS 播放会在链接期缺符号。
+        SWIFT_OBJC_BRIDGING_HEADER: CloudTunes/CloudTunes-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/Libraries/libdca/include
+        LIBRARY_SEARCH_PATHS:
+          - $(SRCROOT)/Libraries/libdca
+        OTHER_LDFLAGS:
+          - -ldca
   CloudTunesWidget:
     type: app-extension
     platform: iOS

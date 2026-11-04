@@ -25,6 +25,37 @@ jobs:
           echo "BUILD_NUMBER=${{ github.run_number }}" >> $GITHUB_ENV
           echo "本次构建版本：$VERSION (${{ github.run_number }})"
 
+      - name: Build libdca (DTS decoder)
+        run: |
+          set -euo pipefail
+          LIBDCA_VER=0.0.7
+          WORK="$RUNNER_TEMP/libdca"
+          rm -rf "$WORK"; mkdir -p "$WORK"
+          URL="https://download.videolan.org/pub/videolan/libdca/${LIBDCA_VER}/libdca-${LIBDCA_VER}.tar.bz2"
+          curl -fsSL "$URL" -o "$WORK/src.tar.bz2"
+          tar -xjf "$WORK/src.tar.bz2" -C "$WORK"
+          SRC="$WORK/libdca-${LIBDCA_VER}"
+
+          # libdca 的 config.h 由 autoconf 生成，tarball 里没有 → 用仓库里手写的那份
+          cp Libraries/libdca/config.h "$SRC/config.h"
+
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p Libraries/libdca/include
+          cp "$SRC/include/dca.h" Libraries/libdca/include/dca.h
+
+          # 库本体只有三个 .c（bitstream/downmix/parse），纯 C 无外部依赖
+          for f in bitstream downmix parse; do
+            xcrun --sdk iphoneos clang \
+              -arch arm64 -miphoneos-version-min=16.0 -isysroot "$SDK" \
+              -O2 -w -fno-common \
+              -I"$SRC" -I"$SRC/include" -I"$SRC/libdca" \
+              -c "$SRC/libdca/$f.c" -o "$WORK/$f.o"
+          done
+          /usr/bin/libtool -static -o Libraries/libdca/libdca.a \
+            "$WORK/bitstream.o" "$WORK/downmix.o" "$WORK/parse.o"
+          lipo -info Libraries/libdca/libdca.a
+          nm -g Libraries/libdca/libdca.a | grep " T _dca_" | head -20
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

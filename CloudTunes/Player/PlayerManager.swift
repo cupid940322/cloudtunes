@@ -42,8 +42,8 @@ final class PlayerManager: NSObject, ObservableObject {
     private var lastPersistSignature = ""
 
     private var player = AVPlayer()
-    /// 无压缩 PCM（wav/aiff/caf）专用通道，非 nil 就说明当前曲目走的是它
-    private var pcmPlayer: PCMPlayer?
+    /// DTS 内置解码通道（边下边解，不落盘）
+    private var dtsPlayer: DTSStreamPlayer?
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
     /// 当前曲目的直链请求头（百度/夸克需要 UA + Cookie + Referer）
@@ -103,8 +103,7 @@ final class PlayerManager: NSObject, ObservableObject {
         } else {
             isPlaying = false
             currentTime = 0
-            pcmPlayer?.pause()
-            pcmPlayer?.currentTime = 0
+            dtsPlayer?.pause()
             player.seek(to: .zero)
             updateNowPlaying()
         }
@@ -338,6 +337,8 @@ final class PlayerManager: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] time in
             guard let self else { return }
+            // DTS 通道自己推进度，别让 AVPlayer 的旧时间覆盖掉
+            if self.dtsPlayer != nil { return }
             // 只写时钟：PlayerManager 本身不再发通知，列表 / 首页因此不会每秒重建 4 次
             self.currentTime = time.seconds
 
@@ -424,9 +425,9 @@ final class PlayerManager: NSObject, ObservableObject {
         watchdogTask?.cancel()
         itemStatusObservation = nil
         isFallingBack = false
-        // 切歌时先掐掉 PCM 通道，避免上一首的 wav 继续响
-        pcmPlayer?.stop()
-        pcmPlayer = nil
+        // 切歌时先掐掉 DTS 通道，避免上一首继续响
+        dtsPlayer?.stop()
+        dtsPlayer = nil
         audioInfo = ""
         player.pause()
         currentIndex = index
@@ -449,14 +450,24 @@ final class PlayerManager: NSObject, ObservableObject {
             do {
                 let link = try await trackProvider.streamURL(file: track.file)
                 try Task.checkCancellation()
-                if MusicScanner.needsLocalPlayback(track.file.name) {
-                    // 无压缩 PCM（wav/aiff/caf）不能走远程流式：AVPlayer 会按错误的
-                    // 位深/字节序解读 RIFF，24bit / 32bit float 出来就是一片噪声。
-                    await self.cacheFirstPlayback(track: track, index: index, link: link)
+
+                // wav / aiff / caf 这类 PCM 容器先取 128KB 前缀探一下：
+                // 里面是 DTS 码流就走内置解码，否则直接直链播放（不占存储）。
+                var info: AudioProbe.Info?
+                if MusicScanner.isPCMContainer(track.file.name),
+                   let probe = await AudioProbe.probeRemote(url: link.url, headers: link.headers) {
+                    info = probe.1
+                }
+                try Task.checkCancellation()
+
+                if let info, info.dts != .none {
+                    await self.startDTSPlayback(track: track, index: index, link: link, info: info)
                 } else {
                     await MainActor.run {
                         // 在取直链期间用户又切了别的歌
                         guard self.currentIndex == index, !Task.isCancelled else { return }
+                        // 普通 PCM 也把格式显示出来，方便确认「这到底是 DTS 还是真 PCM」
+                        self.audioInfo = info?.summary ?? ""
                         self.startStreaming(track: track, index: index, link: link)
                         LibraryStore.shared.markPlayed(track.id)
                     }
@@ -520,130 +531,45 @@ final class PlayerManager: NSObject, ObservableObject {
         fallbackToCache(track: track, index: index, link: link, reason: "连接超时")
     }
 
-    /// 无压缩 PCM（wav / aiff / caf）：先整首拉成本地文件，再交给本地解码器播。
-    ///
-    /// 为什么不能直接吃直链：远程播放走的是 AudioFileStream 渐进式解析，
-    /// 对 RIFF/WAV 的支持远不如本地 AudioFile。16bit PCM 有时能蒙对，
-    /// 24bit、32bit float、WAVE_FORMAT_EXTENSIBLE 则会被当成 16bit 读，
-    /// 表现就是「能播、有声音、全是噪声」。落到本地文件后这个问题就没了。
+    /// DTS 音轨（DTS-CD / 5.1 资源抓轨的标准形态）：iOS 原生没有 DTS 解码器，
+    /// 走内置 libdca 边下边解边播，不落盘、不占手机存储。
     @MainActor
-    private func cacheFirstPlayback(track: Track,
-                                    index: Int,
-                                    link: (url: URL, headers: [String: String])) async {
-        isFallingBack = true
-        playNote = "WAV 需先缓存到本地…"
+    private func startDTSPlayback(track: Track,
+                                  index: Int,
+                                  link: (url: URL, headers: [String: String]),
+                                  info: AudioProbe.Info) async {
+        guard currentIndex == index else { return }
+        audioInfo = info.summary
+        player.replaceCurrentItem(with: nil)
+        player.pause()
 
-        do {
-            let local = try await StreamCache.localCopy(of: link.url,
-                                                        headers: link.headers,
-                                                        key: track.id,
-                                                        source: track.file.name) { [weak self] progress in
-                let percent = Int(progress * 100)
-                Task { @MainActor in
-                    guard let self, self.currentIndex == index, percent < 100 else { return }
-                    self.playNote = "正在缓存 WAV \(percent)%"
-                }
-            }
-            guard currentIndex == index, !Task.isCancelled else { return }
-
-            isFallingBack = false
-
-            // 读文件头，把「这到底是什么」说清楚（播放页顶部会显示一行）
-            let info = AudioProbe.probe(local)
-            if let info, !info.summary.isEmpty { audioInfo = info.summary }
-
-            // DTS 音轨（头写 PCM、数据是 DTS 码流）：iOS 没有 DTS 解码器
-            if let info, AudioProbe.detectDTS(local, info: info) {
-                audioInfo = "\(info.summary) · DTS 音轨"
-                isPlaying = false
-                player.pause()
-                playNote = "这个 .wav 里装的是 DTS 音轨（DTS-CD / 5.1 资源抓轨的标准形态）。PotPlayer、光鸭 App 能正常放是因为它们带了 DTS 解码器；iOS 系统没有 DTS 解码器，按 PCM 解读出来就是白噪声。想听的话可以转成 FLAC/MP3，或等 App 内置 DTS 解码。"
-                updateNowPlaying()
-                return
-            }
-
-            // 头对、数据是随机数：损坏 / 加密 / 下载乱序，任何播放器都只能出噪声
-            let noisy = info.map { AudioProbe.looksLikeNoise(local, info: $0) } ?? false
-            if noisy, let info { audioInfo = "\(info.summary) · 数据是白噪声" }
-
-            // 头写 PCM、数据是 DTS/AC3：这种「假 wav」谁也救不了，直接讲明白
-            if let info, let disguised = info.disguised {
-                isPlaying = false
-                player.pause()
-                playNote = "这个文件的头写着 \(info.codecName)，数据其实是 \(disguised) 码流。iOS 没有 \(disguised) 解码器，所以任何播放器都只能放出噪声——需要先用 foobar2000 之类转成真正的 PCM wav。"
-                updateNowPlaying()
-                return
-            }
-            if let info, info.formatTag != 0, !info.isPlayablePCM {
-                isPlaying = false
-                player.pause()
-                playNote = "\(info.summary)：iOS 不支持这种编码，需要先转码成 PCM。"
-                updateNowPlaying()
-                return
-            }
-
-            // 走 PCM 专用通道：24bit / 32bit float / EXTENSIBLE 全交给 CoreAudio 处理
-            player.replaceCurrentItem(with: nil)   // 让上一个 AVPlayer item 彻底停下
-            let pcm = PCMPlayer()
-            pcm.onTick = { [weak self] t in self?.currentTime = t }
-            pcm.onFinish = { [weak self] in self?.advanceAfterFinish() }
-            pcm.onError = { [weak self] message in self?.playNote = "PCM 解码中断：\(message)" }
-            do {
-                let dur = try pcm.load(url: local, startAt: pendingSeek)
-                pendingSeek = 0
-                pcmPlayer = pcm
-                duration = dur
-                if noisy {
-                    // 不主动放噪声，点播放按钮仍可自己验证（PCM 通道已经载入好了）
-                    isPlaying = false
-                    playNote = "这段音频的数据是白噪声（相邻采样几乎不相关、各频段能量均匀），文件本身已损坏或被加密；换任何播放器都是噪声，只能重新获取音源。"
-                } else {
-                    pcm.play()
-                    isPlaying = true
-                    playNote = ""
-                }
-                updateNowPlaying()
-                LibraryStore.shared.markPlayed(track.id)
-                return
-            } catch {
-                // 极端情况（例如 5.1 声道布局设备不支持）→ 退回 AVPlayer
-                playNote = "PCM 通道打不开（\(error.localizedDescription)），改用系统播放器"
-            }
-
-            let item = AVPlayerItem(url: local)
-            observeEnd(of: item)
-            player.replaceCurrentItem(with: item)
-            player.play()
-            isPlaying = true
-            duration = 0
-
-            itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-                guard item.status == .failed else { return }
-                let reason = item.error?.localizedDescription ?? "无法解码"
-                Task { @MainActor in
-                    self?.isPlaying = false
-                    self?.playNote = "这个音频无法解码（\(reason)）。"
-                    self?.updateNowPlaying()
-                }
-            }
-
-            if pendingSeek > 3 {
-                let target = CMTime(seconds: pendingSeek, preferredTimescale: 600)
-                player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in }
-            }
-            pendingSeek = 0
-            updateNowPlaying()
-            LibraryStore.shared.markPlayed(track.id)
-        } catch is CancellationError {
-            isFallingBack = false
-        } catch {
-            guard currentIndex == index else { return }
-            // 缓存失败（例如网络中断）时先退回直链：16bit 的 wav 直链大多还是能听的
-            isFallingBack = false
-            playNote = "缓存失败：\(error.localizedDescription)，先试直链播放"
-            startStreaming(track: track, index: index, link: link)
-            LibraryStore.shared.markPlayed(track.id)
+        let dts = DTSStreamPlayer()
+        dts.onTime = { [weak self] t in self?.currentTime = t }
+        dts.onDuration = { [weak self] d in self?.duration = d }
+        dts.onReady = { [weak self] in
+            guard let self, self.playNote.hasPrefix("DTS") else { return }
+            self.playNote = ""
         }
+        dts.onFinish = { [weak self] in self?.advanceAfterFinish() }
+        dts.onError = { [weak self] message in
+            guard let self else { return }
+            self.isPlaying = false
+            self.playNote = "DTS 播放失败：\(message)"
+            self.updateNowPlaying()
+        }
+        dtsPlayer = dts
+        isPlaying = true
+        playNote = "DTS 音轨：正在解码播放（边下边解，不占存储）"
+
+        dts.start(url: link.url,
+                  headers: link.headers,
+                  dataOffset: max(0, info.dataOffset),
+                  dataBytes: info.dataBytes,
+                  startAt: pendingSeek,
+                  fourteenBit: info.dts == .dts14)
+        pendingSeek = 0
+        updateNowPlaying()
+        LibraryStore.shared.markPlayed(track.id)
     }
 
     /// 直链被拒绝 → 用带完整请求头的 URLSession 把文件拉到本地缓存再播
@@ -652,11 +578,6 @@ final class PlayerManager: NSObject, ObservableObject {
                                  link: (url: URL, headers: [String: String]),
                                  reason: String) {
         guard currentIndex == index, !isFallingBack else { return }
-        // 无压缩 PCM 不该退回 AVPlayer（那正是噪声的来源），重新走缓存通道
-        if MusicScanner.needsLocalPlayback(track.file.name) {
-            Task { await cacheFirstPlayback(track: track, index: index, link: link) }
-            return
-        }
         isFallingBack = true
         watchdogTask?.cancel()
         playNote = "直链无法播放（\(reason)），正在缓存到本地…"
@@ -702,10 +623,10 @@ final class PlayerManager: NSObject, ObservableObject {
         }
     }
 
-    /// 播放 / 暂停：PCM 通道和 AVPlayer 通道分别处理
+    /// 播放 / 暂停：DTS 与 AVPlayer 两个通道分别处理
     func resumePlayback() {
-        if let pcm = pcmPlayer {
-            pcm.play()
+        if let dts = dtsPlayer {
+            dts.resume()
         } else {
             player.play()
         }
@@ -715,8 +636,8 @@ final class PlayerManager: NSObject, ObservableObject {
     }
 
     func pausePlayback() {
-        if let pcm = pcmPlayer {
-            pcm.pause()
+        if let dts = dtsPlayer {
+            dts.pause()
         } else {
             player.pause()
         }
@@ -762,8 +683,8 @@ final class PlayerManager: NSObject, ObservableObject {
     }
 
     func seek(to seconds: TimeInterval) {
-        if let pcm = pcmPlayer {
-            pcm.currentTime = seconds
+        if let dts = dtsPlayer {
+            dts.seek(to: seconds)
         } else {
             player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
         }

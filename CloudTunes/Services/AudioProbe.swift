@@ -1,14 +1,14 @@
 import Foundation
 
-/// 读本地音频文件的头，判断它到底是不是「标准 PCM」。
+/// 读音频文件的头 + 数据特征，判断「这个文件到底是什么」。
 ///
-/// 这解决的问题是「wav 放出来是噪声」，噪声只可能来自三种情况：
+/// 起因是「wav 放出来是噪声」：噪声只可能来自几种情况：
 /// 1. 容器不是 RIFF（文件根本不是 wav，只是后缀叫 wav）；
-/// 2. fmt 块声明的编码不是 PCM（AC3 / MP3 / ADPCM / DTS …），iOS 没有对应解码器；
-/// 3. 头里写的是 PCM，但数据区开头是 DTS / AC3 的同步字——即「DTS-in-WAV」，
-///    这种文件任何只认 PCM 的播放器都会放出噪声，属于文件本身的问题；
-/// 4. 是 PCM，但位深 / 声道 / 采样率是播放器没处理好的变体（24bit、32bit float、
-///    WAVE_FORMAT_EXTENSIBLE），这属于播放通道选错了，可以修。
+/// 2. fmt 块声明的编码不是 PCM（AC3 / MP3 / ADPCM …），iOS 没有对应解码器；
+/// 3. 头里写的是 PCM，但数据区是 DTS 码流（DTS-CD / 5.1 资源抓轨的标准形态）。
+///    DTS 有两种打包：16bit 直排、以及 14bit 打包（每个样本只带 14 位有效数据，
+///    同步字被拆进位流，字节级搜索永远找不到）。iOS 没有 DTS 解码器，只能出噪声；
+/// 4. 是 PCM，但位深 / 声道 / 采样率是播放器没处理好的变体。
 enum AudioProbe {
     struct Info {
         var container: String = "未知"
@@ -20,6 +20,8 @@ enum AudioProbe {
         var dataBytes: Int = 0
         /// 头写 PCM、数据其实是压缩码流时，这里给出 "DTS" / "AC3"
         var disguised: String?
+        /// DTS 打包方式
+        var dts: DTSVariant = .none
 
         var codecName: String {
             switch formatTag {
@@ -40,7 +42,7 @@ enum AudioProbe {
 
         /// 能不能用 PCM 通道播（AVAudioPlayer / AudioQueue 走的就是这条路）
         var isPlayablePCM: Bool {
-            guard disguised == nil else { return false }
+            guard disguised == nil, dts == .none else { return false }
             guard formatTag == 0x0001 || formatTag == 0x0003 else { return false }
             guard channels >= 1, channels <= 8 else { return false }
             guard sampleRate >= 8000, sampleRate <= 384_000 else { return false }
@@ -49,6 +51,7 @@ enum AudioProbe {
 
         /// 给人看的短描述，例如「WAV · PCM 24bit 96kHz 2ch」
         var summary: String {
+            if dts != .none { return "\(container) · DTS 音轨（\(dts.label)）" }
             if let disguised {
                 return "\(container) · \(disguised)（头里写的是 \(codecName)，实际是 \(disguised) 码流）"
             }
@@ -58,32 +61,90 @@ enum AudioProbe {
         }
     }
 
+    enum DTSVariant: Equatable {
+        case none
+        /// 16bit 直排，字节流里能直接找到 7F FE 80 01
+        case dts16
+        /// 14bit 打包（DTS-CD 常见），同步字在 14bit 位流里
+        case dts14
+
+        var label: String {
+            switch self {
+            case .none: return ""
+            case .dts16: return "16bit"
+            case .dts14: return "14bit 打包"
+            }
+        }
+    }
+
+    // MARK: - 解析
+
+    /// 从文件头部字节解析（本地文件和远程前缀都走这一套）
+    static func parse(_ data: Data) -> Info? {
+        guard data.count >= 12 else { return nil }
+        let magic = ascii(data, 0, 4)
+        if magic == "RIFF" || magic == "RF64" {
+            guard ascii(data, 8, 4) == "WAVE" else {
+                return Info(container: magic)
+            }
+            return parseWAVE(data)
+        }
+        if magic == "FORM" {
+            let type = ascii(data, 8, 4)
+            if type.hasPrefix("AIF") { return parseAIFF(data, container: type) }
+        }
+        return Info(container: magic.isEmpty ? "未知" : magic)
+    }
+
     static func probe(_ url: URL) -> Info? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
-        guard let head = try? handle.read(upToCount: 16 * 1024), head.count >= 12 else { return nil }
-
-        let magic = ascii(head, 0, 4)
-        if magic == "RIFF" || magic == "RF64" {
-            guard ascii(head, 8, 4) == "WAVE" else {
-                return Info(container: magic, formatTag: 0, channels: 0, sampleRate: 0, bitsPerSample: 0)
-            }
-            return parseWAVE(head, handle: handle, container: "WAV")
+        guard let head = try? handle.read(upToCount: 128 * 1024) else { return nil }
+        guard var info = parse(head) else { return nil }
+        // 本地文件可以顺便确认 DTS
+        if info.dataOffset > 0, info.dataOffset < head.count {
+            let payload = head.subdata(in: info.dataOffset..<head.count)
+            info.dts = detectDTS(in: payload, bitsPerSample: info.bitsPerSample)
         }
-        if magic == "FORM" {
-            let type = ascii(head, 8, 4)
-            if type.hasPrefix("AIF") {
-                return parseAIFF(head, container: type)
-            }
-        }
-        return Info(container: magic.isEmpty ? "未知" : magic, formatTag: 0,
-                    channels: 0, sampleRate: 0, bitsPerSample: 0)
+        return info
     }
 
-    // MARK: - WAVE
+    /// 取远程文件的前缀（128KB）用来探测，不落盘、不用等整个文件
+    static func probeRemote(url: URL, headers: [String: String], maxBytes: Int = 128 * 1024) async -> (Data, Info?)? {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 20
+        req.setValue("bytes=0-\(maxBytes - 1)", forHTTPHeaderField: "Range")
+        headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
 
-    private static func parseWAVE(_ head: Data, handle: FileHandle, container: String) -> Info {
-        var info = Info(container: container)
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 20
+        let session = URLSession(configuration: cfg)
+        defer { session.invalidateAndCancel() }
+
+        do {
+            let (bytes, _) = try await session.bytes(for: req)
+            var data = Data()
+            data.reserveCapacity(maxBytes)
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= maxBytes { break }
+            }
+            guard data.count >= 12 else { return nil }
+            var info = parse(data)
+            if let i = info, i.dataOffset > 0, i.dataOffset < data.count {
+                let payload = data.subdata(in: i.dataOffset..<data.count)
+                info?.dts = detectDTS(in: payload, bitsPerSample: i.bitsPerSample)
+            }
+            return (data, info)
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - WAVE / AIFF
+
+    private static func parseWAVE(_ head: Data) -> Info {
+        var info = Info(container: "WAV")
         var offset = 12
         while offset + 8 <= head.count {
             let id = ascii(head, offset, 4)
@@ -106,31 +167,17 @@ enum AudioProbe {
                 break
             }
 
-            guard size >= 0 else { break }
+            guard size > 0 else { break }
             offset = payload + size + (size % 2)   // chunk 按偶数字节对齐
         }
 
-        // 头写 PCM、数据却是 DTS/AC3 码流：这种「假 wav」播出来必然是白噪声
-        if info.dataOffset > 0 {
-            var prefix = Data()
-            if info.dataOffset + 8 <= head.count {
-                prefix = head.subdata(in: info.dataOffset..<min(info.dataOffset + 8, head.count))
-            } else if (try? handle.seek(toOffset: UInt64(info.dataOffset))) != nil {
-                prefix = (try? handle.read(upToCount: 8)) ?? Data()
-            }
-            if prefix.count >= 4 {
-                let b = [UInt8](prefix.prefix(4))
-                if b[0] == 0x7F, b[1] == 0xFE, b[2] == 0x80, b[3] == 0x01 {
-                    info.disguised = "DTS"
-                } else if b[0] == 0x0B, b[1] == 0x77 {
-                    info.disguised = "AC3"
-                }
-            }
+        // 头写 PCM、数据却是 AC3 码流
+        if info.dataOffset > 0, info.dataOffset + 2 <= head.count,
+           u16(head, info.dataOffset) == 0x770B {
+            info.disguised = "AC3"
         }
         return info
     }
-
-    // MARK: - AIFF
 
     private static func parseAIFF(_ head: Data, container: String) -> Info {
         var info = Info(container: container.isEmpty ? "AIFF" : container)
@@ -143,11 +190,10 @@ enum AudioProbe {
             if id == "COMM", payload + 18 <= head.count {
                 info.channels = Int(u16(head, payload))
                 info.bitsPerSample = Int(u16(head, payload + 6))
-                // 80 位扩展浮点采样率，这里只取指数与最高位尾数，精度够用
                 info.sampleRate = extendedSampleRate(head, payload + 8)
                 break
             }
-            guard size >= 0 else { break }
+            guard size > 0 else { break }
             offset = payload + size + (size % 2)
         }
         return info
@@ -162,103 +208,56 @@ enum AudioProbe {
         return Int(value.rounded())
     }
 
-    // MARK: - DTS 音轨检测
+    // MARK: - DTS 检测
 
-    /// 这个 "wav" 里装的是不是 DTS 码流？
+    /// 在 data 区字节里找 DTS 同步字。
     ///
-    /// DTS-CD / 5.1 资源抓轨的标准形态：容器是普通 PCM WAV（fmt 块写 tag=1），
-    /// 但 data 区实际是 DTS 码流。两种打包方式都要认：
-    /// - 16bit 直排：字节流里直接出现同步字 7F FE 80 01；
-    /// - 14bit 打包：每个 16bit 样本只带 14 位有效数据（高 2 位是符号扩展），
-    ///   同步字被拆进 14bit 位流里，必须解包后按位搜（这种用字节搜永远找不到）。
+    /// 优先按 libdca 认识的四种字节级同步模式判（快、且和真正的解码器一致）：
+    /// - `ff 1f 00 e8` + 后续校验 = 14bit 小端（DTS-CD 抓轨最常见）
+    /// - `1f ff e8 00` = 14bit 大端
+    /// - `fe 7f 01 80` = 16bit 小端
+    /// - `7f fe 80 01` = 16bit 大端
     ///
-    /// PotPlayer / 部分网盘 App 自带 DTS 解码器所以能放；iOS 系统没有 DTS
-    /// 解码器，按 PCM 解读出来的就是白噪声。
-    static func detectDTS(_ url: URL, info: Info) -> Bool {
-        guard info.dataOffset > 0 else { return false }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
-        guard (try? handle.seek(toOffset: UInt64(info.dataOffset))) != nil,
-              let block = try? handle.read(upToCount: 128 * 1024),
-              block.count >= 4096 else { return false }
-
-        // 1) 16bit 直排 DTS
-        let bytes = [UInt8](block)
-        for i in 0..<(bytes.count - 4) where bytes[i] == 0x7F && bytes[i + 1] == 0xFE
-            && bytes[i + 2] == 0x80 && bytes[i + 3] == 0x01 {
-            return true
+    /// 都没有时再退回「取每个 16bit 词低 14 位拼位流搜 0x7FFE8001」的暴力扫描，
+    /// 兜住那些帧头不在数据最前面、偏移了一点的文件。
+    static func detectDTS(in payload: Data, bitsPerSample: Int) -> DTSVariant {
+        let bytes = [UInt8](payload.prefix(256 * 1024))
+        var i = 0
+        while i + 6 <= bytes.count {
+            let b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2], b3 = bytes[i + 3]
+            if b0 == 0xFF, b1 == 0x1F, b2 == 0x00, b3 == 0xE8,
+               bytes[i + 4] & 0xF0 == 0xF0, bytes[i + 5] == 0x07 {
+                return .dts14
+            }
+            if b0 == 0x1F, b1 == 0xFF, b2 == 0xE8, b3 == 0x00,
+               bytes[i + 4] == 0x07, bytes[i + 5] & 0xF0 == 0xF0 {
+                return .dts14
+            }
+            if b0 == 0xFE, b1 == 0x7F, b2 == 0x01, b3 == 0x80 {
+                return .dts16
+            }
+            if b0 == 0x7F, b1 == 0xFE, b2 == 0x80, b3 == 0x01 {
+                return .dts16
+            }
+            i += 1
         }
 
-        // 2) 14bit 打包 DTS
-        guard info.bitsPerSample == 16 else { return false }
-        var acc = 0
+        // 兜底：14bit 打包时同步字被拆在位流里，字节级搜不到
+        guard bitsPerSample == 16 else { return .none }
+        var acc: UInt32 = 0
         var bitCount = 0
-        var i = 0
-        while i + 1 < block.count {
-            let lo = Int(block[block.startIndex + i])
-            let hi = Int(block[block.startIndex + i + 1])
-            let word = lo | (hi << 8)
-            let dts14 = word & 0x3FFF
+        var j = 0
+        while j + 1 < bytes.count {
+            let word = Int(bytes[j]) | (Int(bytes[j + 1]) << 8)
+            let low = UInt32(word & 0x3FFF)
             for shift in stride(from: 13, through: 0, by: -1) {
-                acc = (acc << 1) | ((dts14 >> shift) & 1)
+                acc = (acc << 1) | ((low >> UInt32(shift)) & 1)
                 bitCount += 1
-                if bitCount >= 32, acc == 0x7FFE8001 { return true }
+                if bitCount >= 32, acc == 0x7FFE_8001 { return .dts14 }
             }
-            i += 2
+            j += 2
         }
-        return false
-    }
-
-    // MARK: - 噪声判定
-
-    /// 数据段看起来是白噪声吗？
-    ///
-    /// 判断依据（只看前 1.5 秒，代价很小）：16bit PCM 正常音乐相邻采样的相关性
-    /// 一般在 0.9 以上、过零率远低于 0.5；而「头对但数据是随机数」的文件
-    /// （损坏、加密、下载乱序）相关性接近 0、过零率接近 0.5，各频点能量也均匀。
-    /// 这种情况任何播放器都只能放出噪声，与解码器无关。
-    static func looksLikeNoise(_ url: URL, info: Info) -> Bool {
-        guard info.bitsPerSample == 16,
-              info.channels >= 1, info.channels <= 2,
-              info.dataOffset > 0 else { return false }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
-        guard (try? handle.seek(toOffset: UInt64(info.dataOffset))) != nil,
-              let block = try? handle.read(upToCount: 96 * 1024),
-              block.count >= 16 * 1024 else { return false }
-
-        var samples = [Double]()
-        samples.reserveCapacity(block.count / 2)
-        var i = 0
-        while i + 1 < block.count {
-            let lo = UInt16(block[block.startIndex + i])
-            let hi = UInt16(block[block.startIndex + i + 1])
-            samples.append(Double(Int16(bitPattern: lo | (hi << 8))))
-            i += 2
-        }
-        guard samples.count > 4096 else { return false }
-
-        var mean = 0.0
-        for v in samples { mean += v }
-        mean /= Double(samples.count)
-
-        var num = 0.0, d1 = 0.0, d2 = 0.0, power = 0.0, zeroCross = 0
-        for idx in samples.indices {
-            let x = samples[idx] - mean
-            power += x * x
-            if idx > 0 {
-                let y = samples[idx - 1] - mean
-                num += x * y
-                d1 += y * y
-                d2 += x * x
-                if (samples[idx - 1] < 0) != (samples[idx] < 0) { zeroCross += 1 }
-            }
-        }
-        let corr = (d1 > 0 && d2 > 0) ? num / (d1 * d2).squareRoot() : 0
-        let zcr = Double(zeroCross) / Double(samples.count)
-        let rms = (power / Double(samples.count)).squareRoot()
-
-        return rms > 300 && corr < 0.12 && zcr > 0.40
+        return .none
     }
 
     // MARK: - 字节读取（小端）
