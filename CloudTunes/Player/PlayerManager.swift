@@ -557,7 +557,8 @@ final class PlayerManager: NSObject, ObservableObject {
 
             if pendingSeek > 3 {
                 let target = CMTime(seconds: pendingSeek, preferredTimescale: 600)
-                player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+                // 用带 completion 的同步重载：async 上下文里会优先匹配 async 版 seek
+                player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in }
             }
             pendingSeek = 0
             updateNowPlaying()
