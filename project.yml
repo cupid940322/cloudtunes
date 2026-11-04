@@ -2,6 +2,13 @@ name: CloudTunes
 options:
   bundleIdPrefix: com.gysbs
   createIntermediateGroups: true
+  # 注意：XcodeGen 新版默认生成的工程格式是 xcode16_0（objectVersion 77），
+  # 而 macos-14 runner 上只有 Xcode 15.4，打不开这种格式，会直接报
+  # `The project 'CloudTunes' cannot be opened because it is in a future
+  # Xcode project file format (77)`。这里显式钉成 Xcode 15.3 的格式，
+  # 保证两个 runner 池（macos-14 / macos-15）都能编译。
+  projectFormat: xcode15_3
+  xcodeVersion: "15.3"
   deploymentTarget:
     iOS: "16.0"
 settings:
