@@ -277,6 +277,7 @@ final class DTSStreamPlayer: NSObject {
             // 2) 背压：解码领先太多就先攒着，等播放追上来
             let goal = Int(Double(decoder.sampleRate) * 6.0)
             if aheadSamples() > goal {
+                applyBackpressure()
                 scheduleDeferredPump()
                 return
             }
@@ -297,7 +298,22 @@ final class DTSStreamPlayer: NSObject {
             }
         }
 
+        applyBackpressure()
         checkDrained()
+    }
+
+    /// 按缓冲字节数做背压：>1MB 就挂起下载，<512KB 恢复。
+    ///
+    /// 只按「已调度样本」控制是不够的——解码头一停就不再往 AVAudioPlayerNode 里塞，
+    /// 那边的水位永远上不去，下载会一路把整个文件拉进内存（一首 44MB 的 wav 直接吃掉 44MB）。
+    private func applyBackpressure() {
+        if remain > 1 << 20, let t = task, t.state == .running {
+            t.suspend()
+            suspendedTask = t
+        } else if remain < 512 << 10, let s = suspendedTask, s.state == .suspended {
+            s.resume()
+            suspendedTask = nil
+        }
     }
 
     /// 帧头里只有码率 / 采样率，取一次就够。
@@ -380,17 +396,7 @@ final class DTSStreamPlayer: NSObject {
 
         counterLock.lock()
         scheduledSamples += left.count
-        let ahead = scheduledSamples - playedSamples
         counterLock.unlock()
-
-        // 领先过多 → 暂停下载；追上来 → 恢复
-        if ahead > Int(sampleRate * 8), let t = task, t.state == .running {
-            t.suspend()
-            suspendedTask = t
-        } else if ahead < Int(sampleRate * 3), let t = suspendedTask, t.state == .suspended {
-            t.resume()
-            suspendedTask = nil
-        }
         onReady?()
     }
 
