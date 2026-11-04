@@ -248,6 +248,12 @@ struct PlayerView: View {
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.65))
                     .lineLimit(1)
+                if !player.audioInfo.isEmpty {
+                    Text(player.audioInfo)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .lineLimit(1)
+                }
             }
             Spacer()
             if let id = track?.id {

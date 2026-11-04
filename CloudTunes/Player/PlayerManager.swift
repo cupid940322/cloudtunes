@@ -33,6 +33,8 @@ final class PlayerManager: NSObject, ObservableObject {
     @Published var isShuffled = false
     /// 播放状态提示（缓存中 / 直链被拒绝等），播放页顶部横幅展示
     @Published var playNote: String = ""
+    /// 当前曲目的音频格式说明（wav / aiff 这类无压缩文件才有），播放页顶部一行小字
+    @Published var audioInfo: String = ""
     /// 上次的播放队列（App 重启 / 很久没听后，首页「继续播放」用它恢复整个列表）
     @Published private(set) var savedSession: PlaybackSession?
     /// 恢复会话时要跳到的位置
@@ -40,6 +42,8 @@ final class PlayerManager: NSObject, ObservableObject {
     private var lastPersistSignature = ""
 
     private var player = AVPlayer()
+    /// 无压缩 PCM（wav/aiff/caf）专用通道，非 nil 就说明当前曲目走的是它
+    private var pcmPlayer: PCMPlayer?
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
     /// 当前曲目的直链请求头（百度/夸克需要 UA + Cookie + Referer）
@@ -76,30 +80,33 @@ final class PlayerManager: NSObject, ObservableObject {
 
     @objc private func handleItemEnded(_ note: Notification) {
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            guard let t = self.currentTrack,
-                  let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
+            self?.advanceAfterFinish()
+        }
+    }
 
-            // 单曲循环：回到开头继续放
-            if self.repeatMode == .one {
-                self.player.seek(to: .zero)
-                self.player.play()
-                self.isPlaying = true
-                self.currentTime = 0
-                self.updateNowPlaying()
-                return
-            }
-            if self.currentIndex + 1 < self.queue.count {
-                self.playAt(self.currentIndex + 1, provider: p)
-            } else if self.repeatMode == .all, !self.queue.isEmpty {
-                // 列表循环：回到第一首
-                self.playAt(0, provider: p)
-            } else {
-                self.isPlaying = false
-                self.currentTime = 0
-                self.player.seek(to: .zero)
-                self.updateNowPlaying()
-            }
+    /// 一首放完：单曲循环 → 下一首 → 列表循环 → 停
+    private func advanceAfterFinish() {
+        guard let t = currentTrack,
+              let p = ProviderRegistry.provider(kind: t.providerKind) else { return }
+
+        // 单曲循环：回到开头继续放
+        if repeatMode == .one {
+            seek(to: 0)
+            resumePlayback()
+            return
+        }
+        if currentIndex + 1 < queue.count {
+            playAt(currentIndex + 1, provider: p)
+        } else if repeatMode == .all, !queue.isEmpty {
+            // 列表循环：回到第一首
+            playAt(0, provider: p)
+        } else {
+            isPlaying = false
+            currentTime = 0
+            pcmPlayer?.pause()
+            pcmPlayer?.currentTime = 0
+            player.seek(to: .zero)
+            updateNowPlaying()
         }
     }
 
@@ -148,10 +155,10 @@ final class PlayerManager: NSObject, ObservableObject {
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in
-            self?.player.play(); self?.isPlaying = true; return .success
+            self?.resumePlayback(); return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.player.pause(); self?.isPlaying = false; return .success
+            self?.pausePlayback(); return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
             self?.togglePlay(); return .success
@@ -417,6 +424,11 @@ final class PlayerManager: NSObject, ObservableObject {
         watchdogTask?.cancel()
         itemStatusObservation = nil
         isFallingBack = false
+        // 切歌时先掐掉 PCM 通道，避免上一首的 wav 继续响
+        pcmPlayer?.stop()
+        pcmPlayer = nil
+        audioInfo = ""
+        player.pause()
         currentIndex = index
         pendingSeek = 0
         let track = queue[index]
@@ -535,29 +547,68 @@ final class PlayerManager: NSObject, ObservableObject {
             guard currentIndex == index, !Task.isCancelled else { return }
 
             isFallingBack = false
+
+            // 读文件头，把「这到底是什么」说清楚（播放页顶部会显示一行）
+            let info = AudioProbe.probe(local)
+            if let info, !info.summary.isEmpty { audioInfo = info.summary }
+
+            // 头写 PCM、数据是 DTS/AC3：这种「假 wav」谁也救不了，直接讲明白
+            if let info, let disguised = info.disguised {
+                isPlaying = false
+                player.pause()
+                playNote = "这个文件的头写着 \(info.codecName)，数据其实是 \(disguised) 码流。iOS 没有 \(disguised) 解码器，所以任何播放器都只能放出噪声——需要先用 foobar2000 之类转成真正的 PCM wav。"
+                updateNowPlaying()
+                return
+            }
+            if let info, info.formatTag != 0, !info.isPlayablePCM {
+                isPlaying = false
+                player.pause()
+                playNote = "\(info.summary)：iOS 不支持这种编码，需要先转码成 PCM。"
+                updateNowPlaying()
+                return
+            }
+
+            // 走 PCM 专用通道：24bit / 32bit float / EXTENSIBLE 全交给 CoreAudio 处理
+            player.replaceCurrentItem(with: nil)   // 让上一个 AVPlayer item 彻底停下
+            let pcm = PCMPlayer()
+            pcm.onTick = { [weak self] t in self?.currentTime = t }
+            pcm.onFinish = { [weak self] in self?.advanceAfterFinish() }
+            pcm.onError = { [weak self] message in self?.playNote = "PCM 解码中断：\(message)" }
+            do {
+                let dur = try pcm.load(url: local, startAt: pendingSeek)
+                pendingSeek = 0
+                pcmPlayer = pcm
+                duration = dur
+                pcm.play()
+                isPlaying = true
+                playNote = ""
+                updateNowPlaying()
+                LibraryStore.shared.markPlayed(track.id)
+                return
+            } catch {
+                // 极端情况（例如 5.1 声道布局设备不支持）→ 退回 AVPlayer
+                playNote = "PCM 通道打不开（\(error.localizedDescription)），改用系统播放器"
+            }
+
             let item = AVPlayerItem(url: local)
             observeEnd(of: item)
             player.replaceCurrentItem(with: item)
             player.play()
             isPlaying = true
             duration = 0
-            playNote = ""
 
-            // 本地也解不出来 → 基本可以断定文件本身不是标准 PCM（常见是 DTS/AC3 套了 .wav）
             itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
                 guard item.status == .failed else { return }
                 let reason = item.error?.localizedDescription ?? "无法解码"
                 Task { @MainActor in
                     self?.isPlaying = false
-                    self?.playNote = "这个音频无法解码（\(reason)）。如果文件是 DTS/AC3 等压缩编码却用了 .wav 后缀，iOS 原生放不了。"
-                    self?.lyricSourceNote = "音频解码失败：\(reason)"
+                    self?.playNote = "这个音频无法解码（\(reason)）。"
                     self?.updateNowPlaying()
                 }
             }
 
             if pendingSeek > 3 {
                 let target = CMTime(seconds: pendingSeek, preferredTimescale: 600)
-                // 用带 completion 的同步重载：async 上下文里会优先匹配 async 版 seek
                 player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in }
             }
             pendingSeek = 0
@@ -581,6 +632,11 @@ final class PlayerManager: NSObject, ObservableObject {
                                  link: (url: URL, headers: [String: String]),
                                  reason: String) {
         guard currentIndex == index, !isFallingBack else { return }
+        // 无压缩 PCM 不该退回 AVPlayer（那正是噪声的来源），重新走缓存通道
+        if MusicScanner.needsLocalPlayback(track.file.name) {
+            Task { await cacheFirstPlayback(track: track, index: index, link: link) }
+            return
+        }
         isFallingBack = true
         watchdogTask?.cancel()
         playNote = "直链无法播放（\(reason)），正在缓存到本地…"
@@ -619,13 +675,32 @@ final class PlayerManager: NSObject, ObservableObject {
     }
 
     func togglePlay() {
-        if player.timeControlStatus == .playing {
-            player.pause()
-            isPlaying = false
+        if isPlaying {
+            pausePlayback()
+        } else {
+            resumePlayback()
+        }
+    }
+
+    /// 播放 / 暂停：PCM 通道和 AVPlayer 通道分别处理
+    func resumePlayback() {
+        if let pcm = pcmPlayer {
+            pcm.play()
         } else {
             player.play()
-            isPlaying = true
         }
+        isPlaying = true
+        updateNowPlaying()
+        persistSession()
+    }
+
+    func pausePlayback() {
+        if let pcm = pcmPlayer {
+            pcm.pause()
+        } else {
+            player.pause()
+        }
+        isPlaying = false
         updateNowPlaying()
         persistSession()
     }
@@ -667,7 +742,11 @@ final class PlayerManager: NSObject, ObservableObject {
     }
 
     func seek(to seconds: TimeInterval) {
-        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        if let pcm = pcmPlayer {
+            pcm.currentTime = seconds
+        } else {
+            player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        }
         currentTime = seconds
         updateNowPlaying()
     }
