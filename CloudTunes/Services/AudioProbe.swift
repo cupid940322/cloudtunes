@@ -162,6 +162,53 @@ enum AudioProbe {
         return Int(value.rounded())
     }
 
+    // MARK: - DTS 音轨检测
+
+    /// 这个 "wav" 里装的是不是 DTS 码流？
+    ///
+    /// DTS-CD / 5.1 资源抓轨的标准形态：容器是普通 PCM WAV（fmt 块写 tag=1），
+    /// 但 data 区实际是 DTS 码流。两种打包方式都要认：
+    /// - 16bit 直排：字节流里直接出现同步字 7F FE 80 01；
+    /// - 14bit 打包：每个 16bit 样本只带 14 位有效数据（高 2 位是符号扩展），
+    ///   同步字被拆进 14bit 位流里，必须解包后按位搜（这种用字节搜永远找不到）。
+    ///
+    /// PotPlayer / 部分网盘 App 自带 DTS 解码器所以能放；iOS 系统没有 DTS
+    /// 解码器，按 PCM 解读出来的就是白噪声。
+    static func detectDTS(_ url: URL, info: Info) -> Bool {
+        guard info.dataOffset > 0 else { return false }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: UInt64(info.dataOffset))) != nil,
+              let block = try? handle.read(upToCount: 128 * 1024),
+              block.count >= 4096 else { return false }
+
+        // 1) 16bit 直排 DTS
+        let bytes = [UInt8](block)
+        for i in 0..<(bytes.count - 4) where bytes[i] == 0x7F && bytes[i + 1] == 0xFE
+            && bytes[i + 2] == 0x80 && bytes[i + 3] == 0x01 {
+            return true
+        }
+
+        // 2) 14bit 打包 DTS
+        guard info.bitsPerSample == 16 else { return false }
+        var acc = 0
+        var bitCount = 0
+        var i = 0
+        while i + 1 < block.count {
+            let lo = Int(block[block.startIndex + i])
+            let hi = Int(block[block.startIndex + i + 1])
+            let word = lo | (hi << 8)
+            let dts14 = word & 0x3FFF
+            for shift in stride(from: 13, through: 0, by: -1) {
+                acc = (acc << 1) | ((dts14 >> shift) & 1)
+                bitCount += 1
+                if bitCount >= 32, acc == 0x7FFE8001 { return true }
+            }
+            i += 2
+        }
+        return false
+    }
+
     // MARK: - 噪声判定
 
     /// 数据段看起来是白噪声吗？

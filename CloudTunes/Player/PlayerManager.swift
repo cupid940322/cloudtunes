@@ -551,6 +551,17 @@ final class PlayerManager: NSObject, ObservableObject {
             // 读文件头，把「这到底是什么」说清楚（播放页顶部会显示一行）
             let info = AudioProbe.probe(local)
             if let info, !info.summary.isEmpty { audioInfo = info.summary }
+
+            // DTS 音轨（头写 PCM、数据是 DTS 码流）：iOS 没有 DTS 解码器
+            if let info, AudioProbe.detectDTS(local, info: info) {
+                audioInfo = "\(info.summary) · DTS 音轨"
+                isPlaying = false
+                player.pause()
+                playNote = "这个 .wav 里装的是 DTS 音轨（DTS-CD / 5.1 资源抓轨的标准形态）。PotPlayer、光鸭 App 能正常放是因为它们带了 DTS 解码器；iOS 系统没有 DTS 解码器，按 PCM 解读出来就是白噪声。想听的话可以转成 FLAC/MP3，或等 App 内置 DTS 解码。"
+                updateNowPlaying()
+                return
+            }
+
             // 头对、数据是随机数：损坏 / 加密 / 下载乱序，任何播放器都只能出噪声
             let noisy = info.map { AudioProbe.looksLikeNoise(local, info: $0) } ?? false
             if noisy, let info { audioInfo = "\(info.summary) · 数据是白噪声" }
