@@ -28,9 +28,9 @@ struct MiniPlayerBar: View {
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                            Text(track.displayArtist)
+                            Text(subtitle(for: track))
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(player.isFallingBack ? Theme.accent : Color.secondary)
                                 .lineLimit(1)
                         }
 
@@ -74,6 +74,12 @@ struct MiniPlayerBar: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// 缓存中优先显示进度提示，平时显示歌手
+    private func subtitle(for track: Track) -> String {
+        guard player.isFallingBack else { return track.displayArtist }
+        return player.playNote.isEmpty ? "正在缓存到本地…" : player.playNote
     }
 }
 

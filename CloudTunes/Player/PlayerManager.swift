@@ -437,11 +437,17 @@ final class PlayerManager: NSObject, ObservableObject {
             do {
                 let link = try await trackProvider.streamURL(file: track.file)
                 try Task.checkCancellation()
-                await MainActor.run {
-                    // 在取直链期间用户又切了别的歌
-                    guard self.currentIndex == index, !Task.isCancelled else { return }
-                    self.startStreaming(track: track, index: index, link: link)
-                    LibraryStore.shared.markPlayed(track.id)
+                if MusicScanner.needsLocalPlayback(track.file.name) {
+                    // 无压缩 PCM（wav/aiff/caf）不能走远程流式：AVPlayer 会按错误的
+                    // 位深/字节序解读 RIFF，24bit / 32bit float 出来就是一片噪声。
+                    await self.cacheFirstPlayback(track: track, index: index, link: link)
+                } else {
+                    await MainActor.run {
+                        // 在取直链期间用户又切了别的歌
+                        guard self.currentIndex == index, !Task.isCancelled else { return }
+                        self.startStreaming(track: track, index: index, link: link)
+                        LibraryStore.shared.markPlayed(track.id)
+                    }
                 }
                 try Task.checkCancellation()
                 await self.loadLyrics(for: track)
@@ -500,6 +506,72 @@ final class PlayerManager: NSObject, ObservableObject {
     private func watchdogFired(index: Int, track: Track, link: (url: URL, headers: [String: String])) {
         guard currentIndex == index, isPlaying, !isFallingBack, currentTime < 0.5 else { return }
         fallbackToCache(track: track, index: index, link: link, reason: "连接超时")
+    }
+
+    /// 无压缩 PCM（wav / aiff / caf）：先整首拉成本地文件，再交给本地解码器播。
+    ///
+    /// 为什么不能直接吃直链：远程播放走的是 AudioFileStream 渐进式解析，
+    /// 对 RIFF/WAV 的支持远不如本地 AudioFile。16bit PCM 有时能蒙对，
+    /// 24bit、32bit float、WAVE_FORMAT_EXTENSIBLE 则会被当成 16bit 读，
+    /// 表现就是「能播、有声音、全是噪声」。落到本地文件后这个问题就没了。
+    @MainActor
+    private func cacheFirstPlayback(track: Track,
+                                    index: Int,
+                                    link: (url: URL, headers: [String: String])) async {
+        isFallingBack = true
+        playNote = "WAV 需先缓存到本地…"
+
+        do {
+            let local = try await StreamCache.localCopy(of: link.url,
+                                                        headers: link.headers,
+                                                        key: track.id,
+                                                        source: track.file.name) { [weak self] progress in
+                let percent = Int(progress * 100)
+                Task { @MainActor in
+                    guard let self, self.currentIndex == index, percent < 100 else { return }
+                    self.playNote = "正在缓存 WAV \(percent)%"
+                }
+            }
+            guard currentIndex == index, !Task.isCancelled else { return }
+
+            isFallingBack = false
+            let item = AVPlayerItem(url: local)
+            observeEnd(of: item)
+            player.replaceCurrentItem(with: item)
+            player.play()
+            isPlaying = true
+            duration = 0
+            playNote = ""
+
+            // 本地也解不出来 → 基本可以断定文件本身不是标准 PCM（常见是 DTS/AC3 套了 .wav）
+            itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+                guard item.status == .failed else { return }
+                let reason = item.error?.localizedDescription ?? "无法解码"
+                Task { @MainActor in
+                    self?.isPlaying = false
+                    self?.playNote = "这个音频无法解码（\(reason)）。如果文件是 DTS/AC3 等压缩编码却用了 .wav 后缀，iOS 原生放不了。"
+                    self?.lyricSourceNote = "音频解码失败：\(reason)"
+                    self?.updateNowPlaying()
+                }
+            }
+
+            if pendingSeek > 3 {
+                let target = CMTime(seconds: pendingSeek, preferredTimescale: 600)
+                player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            pendingSeek = 0
+            updateNowPlaying()
+            LibraryStore.shared.markPlayed(track.id)
+        } catch is CancellationError {
+            isFallingBack = false
+        } catch {
+            guard currentIndex == index else { return }
+            // 缓存失败（例如网络中断）时先退回直链：16bit 的 wav 直链大多还是能听的
+            isFallingBack = false
+            playNote = "缓存失败：\(error.localizedDescription)，先试直链播放"
+            startStreaming(track: track, index: index, link: link)
+            LibraryStore.shared.markPlayed(track.id)
+        }
     }
 
     /// 直链被拒绝 → 用带完整请求头的 URLSession 把文件拉到本地缓存再播

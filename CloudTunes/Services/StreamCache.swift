@@ -42,28 +42,78 @@ enum StreamCache {
         return size > 0 ? url : nil
     }
 
-    /// 下载到本地缓存（命中缓存直接返回），失败抛出带 HTTP 状态的错误
+    /// 下载到本地缓存（命中缓存直接返回），失败抛出带 HTTP 状态的错误。
+    /// - Parameter onProgress: 0…1 的进度回调（后台线程），未知总长度时不回调
     static func localCopy(of url: URL,
                           headers: [String: String],
                           key: String,
-                          source fileName: String) async throws -> URL {
+                          source fileName: String,
+                          onProgress: ((Double) -> Void)? = nil) async throws -> URL {
         if let hit = existing(key: key, source: fileName) { return hit }
 
         var req = URLRequest(url: url)
-        req.timeoutInterval = 30
+        // 无损文件动辄几十上百 MB，单请求超时放宽，避免大文件卡在 30 秒上
+        req.timeoutInterval = 60
         headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
 
-        let (tmp, resp) = try await session.download(for: req)
+        let dest = directory.appendingPathComponent(cacheFileName(forKey: key, source: fileName))
+        let part = dest.appendingPathExtension("part")
+        try? FileManager.default.removeItem(at: part)
+
+        let (bytes, resp) = try await session.bytes(for: req)
         guard let http = resp as? HTTPURLResponse else { throw CloudError.network("无响应") }
         guard (200..<300).contains(http.statusCode) else {
             throw CloudError.network("直链返回 HTTP \(http.statusCode)（Cookie 可能已过期，或该文件需要会员权限）")
         }
-        let dest = directory.appendingPathComponent(cacheFileName(forKey: key, source: fileName))
+
+        guard FileManager.default.createFile(atPath: part.path, contents: nil),
+              let handle = FileHandle(forWritingAtPath: part.path) else {
+            throw CloudError.network("无法写入缓存文件")
+        }
+
+        let total = http.expectedContentLength
+        var received: Int64 = 0
+        var lastReport: Int64 = 0
+        var buffer = Data()
+        buffer.reserveCapacity(chunkSize)
+
+        do {
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= chunkSize {
+                    try handle.write(contentsOf: buffer)
+                    received += Int64(buffer.count)
+                    buffer.removeAll(keepingCapacity: true)
+                    if let onProgress, total > 0, received - lastReport >= total / 20 {
+                        lastReport = received
+                        onProgress(min(0.999, Double(received) / Double(total)))
+                    }
+                }
+            }
+            if !buffer.isEmpty {
+                try handle.write(contentsOf: buffer)
+                received += Int64(buffer.count)
+            }
+            try handle.close()
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: part)
+            throw error
+        }
+
+        guard received > 0 else {
+            try? FileManager.default.removeItem(at: part)
+            throw CloudError.network("下载为空，直链可能已失效")
+        }
+
         try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: tmp, to: dest)
+        try FileManager.default.moveItem(at: part, to: dest)
+        onProgress?(1)
         trim()
         return dest
     }
+
+    private static let chunkSize = 1 << 20
 
     static var totalSize: Int64 {
         let fm = FileManager.default

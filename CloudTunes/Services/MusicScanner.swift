@@ -15,6 +15,19 @@ enum MusicScanner {
         return audioExtensions.contains(ext.lowercased())
     }
 
+    /// 必须先下载到本地再播的无压缩 PCM 格式。
+    ///
+    /// AVPlayer 直接喂远程 WAV（HTTP 渐进式）时，走的是 AudioFileStream 那套解析，
+    /// 对 RIFF 的支持比本地 AudioFile 差很多：24bit / 32bit float / WAVE_FORMAT_EXTENSIBLE
+    /// 的文件会被按错误的位深与字节序解读，结果就是一片白噪声（还能"正常"播放、不报错）。
+    /// 这类格式一律先落到本地缓存，交给本地解码器读，声音才正常。
+    static let localFirstExtensions: Set<String> = ["wav", "aiff", "aif", "aifc", "caf"]
+
+    static func needsLocalPlayback(_ name: String) -> Bool {
+        guard let ext = name.split(separator: ".").last else { return false }
+        return localFirstExtensions.contains(ext.lowercased())
+    }
+
     /// 从目录列表中筛出音频文件
     static func filterAudio(_ files: [CloudFile]) -> [CloudFile] {
         files.filter { !$0.isFolder && isAudioFile($0.name) }
