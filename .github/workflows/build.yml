@@ -11,7 +11,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # macos-15 池今晚（美西早高峰）一直排不到 runner，任务在 Set up job 卡 15 分钟
+    # 就被取消；先换 macos-14 的池子，容量恢复后可以改回去。
+    runs-on: macos-14
     permissions:
       contents: write
     steps:
