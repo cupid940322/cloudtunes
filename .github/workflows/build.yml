@@ -93,8 +93,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # xcodebuild 的日志里有一行几万字符的 swift-frontend 命令行，
+          # 直接 `tail -150` 会被那一行吃满 60000 字符配额，真正的 error 全被截掉。
+          # 所以先抽 error 行，再补带行号定位的上下文和末尾几十行（每行截断）。
+          {
+            echo "### 编译错误（error/fatal error）"
+            grep -nE "error:|fatal error:|BUILD FAILED|The following build commands failed" build.log \
+              | cut -c1-400 | head -n 40 || echo "（未捕获到 error 关键字，可能编译进程被系统杀掉）"
+            echo
+            echo "### 出错文件定位"
+            grep -oE "/Users/runner/work/[^ :\"]+\.(swift|m|mm|h|c):[0-9]+:[0-9]+: error:" build.log \
+              | head -n 20 || true
+            echo
+            echo "### 日志末尾 40 行（每行截断 240 字符）"
+            tail -n 40 build.log | cut -c1-240
+          } > err.txt
+          echo "摘要大小：$(wc -c < err.txt) 字节"
           gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
-            -f body="$(tail -n 150 build.log | head -c 60000)"
+            -f body="$(head -c 60000 err.txt)"
           echo "错误已发布到 commit 评论"
 
       - name: Package unsigned ipa
