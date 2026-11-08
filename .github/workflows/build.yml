@@ -8,6 +8,11 @@ on:
       - 'icon.png'
       - 'VERSION'
   workflow_dispatch:
+  # 兜底：GitHub 免费 macOS runner 偶尔排不到机器（任务在 Set up job 卡 15 分钟后
+  # 被 cancelled），push 触发的构建会白跑。每天 UTC 10:00（美西凌晨 2 点）
+  # 低峰时段固定构建一次，保证代码最终一定能出包。
+  schedule:
+    - cron: '0 10 * * *'
 
 jobs:
   build:
