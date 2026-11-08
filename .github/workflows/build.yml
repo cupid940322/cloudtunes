@@ -16,9 +16,9 @@ on:
 
 jobs:
   build:
-    # macos-15 池今晚（美西早高峰）一直排不到 runner，任务在 Set up job 卡 15 分钟
-    # 就被取消；先换 macos-14 的池子，容量恢复后可以改回去。
-    runs-on: macos-14
+    # macos-15 / macos-14 池子近期长期排不到 runner（任务在 Set up job 卡住后被取消），
+    # 换 macos-13 的 Intel 池试试；它同样带 Xcode 15，iOS 16 部署目标没问题。
+    runs-on: macos-13
     permissions:
       contents: write
     steps:
