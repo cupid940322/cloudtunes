@@ -16,9 +16,9 @@ on:
 
 jobs:
   build:
-    # macos-15 / macos-14 池子近期长期排不到 runner（任务在 Set up job 卡住后被取消），
-    # 换 macos-13 的 Intel 池试试；它同样带 Xcode 15，iOS 16 部署目标没问题。
-    runs-on: macos-13
+    # macos-15 / macos-13 池子近期都排不到 runner（任务在 Set up job 卡住后被取消）。
+    # macos-14 是历史上成功出过包的池子，回到它；被取消时由 auto-retry.yml 自动重跑。
+    runs-on: macos-14
     permissions:
       contents: write
     steps:

@@ -1,0 +1,37 @@
+name: Auto Retry Cancelled Build
+
+# GitHub 免费层的 macOS runner 经常排不到机器：构建任务在 "Set up job"
+# 卡十几分钟后被系统标成 cancelled，代码本身一点问题都没有。
+# 这个 workflow 监听构建结果，只要是被 cancelled 就自动重跑一次。
+#
+# 注意：rerun 复用同一个 run id，不会再触发 workflow_run，
+# 所以不会无限套娃；而 cancelled 的 job 没有分配到机器，也不消耗额度。
+
+on:
+  workflow_run:
+    workflows: ["Build iOS (unsigned ipa)"]
+    types: [completed]
+
+jobs:
+  retry:
+    # 只处理「被取消」；编译失败（failure）说明代码有问题，重跑没意义
+    if: github.event.workflow_run.conclusion == 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run the cancelled build
+        run: |
+          echo "run id: ${{ github.event.workflow_run.id }}"
+          echo "attempt: ${{ github.event.workflow_run.run_attempt }}"
+          # 最多重试 6 次，避免长期占用排队资源
+          if [ "${{ github.event.workflow_run.run_attempt }}" -ge 6 ]; then
+            echo "已重试 6 次仍未拿到 runner，放弃。等每天 UTC 10:00 的定时构建。"
+            exit 0
+          fi
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/rerun"
+          echo "已提交重跑请求"
