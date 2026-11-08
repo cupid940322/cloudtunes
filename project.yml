@@ -38,6 +38,9 @@ targets:
         # 桌面显示的中文名由 Resources/zh-Hans.lproj/InfoPlist.strings 提供。
         CFBundleDisplayName: TangYuanMusic
         UILaunchScreen: {}
+        # 锁屏滚动歌词用的是「实时活动」(Live Activity)。
+        # 内容由 App 本地 update 推送，不走 APNs，所以免费 Apple ID 签名也能用。
+        NSSupportsLiveActivities: true
         UIBackgroundModes:
           - audio
         UISupportedInterfaceOrientations:

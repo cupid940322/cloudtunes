@@ -147,6 +147,59 @@ final class PlayerManager: NSObject, ObservableObject {
             self?.updateNowPlaying()
             self?.persistSession()
         }
+        bindLiveLyrics()
+    }
+
+    // MARK: - 锁屏滚动歌词
+
+    /// 锁屏 / 灵动岛的歌词卡片靠这里驱动。
+    /// 只在四个真正影响显示的时机刷新：进度跳动（节流）、播放暂停、歌词加载完、换歌。
+    private func bindLiveLyrics() {
+        guard #available(iOS 16.1, *) else { return }
+
+        // 进度最快 0.4 秒采样一次；歌词行本身是以秒为单位的，这个精度够用，
+        // 又不至于把卡片更新频率打到系统限流阈值。
+        clock.$time
+            .throttle(for: .seconds(0.4), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] _ in self?.refreshLiveLyrics() }
+            .store(in: &cancellables)
+
+        $isPlaying
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.refreshLiveLyrics() }
+            .store(in: &cancellables)
+
+        $lyricLines
+            .map { $0.count }
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.refreshLiveLyrics() }
+            .store(in: &cancellables)
+
+        $currentIndex
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.refreshLiveLyrics() }
+            .store(in: &cancellables)
+    }
+
+    private func refreshLiveLyrics() {
+        if #available(iOS 16.1, *) {
+            let track = currentTrack
+            let lines = lyricLines
+            let time = currentTime
+            let total = duration
+            let playing = isPlaying
+            Task { @MainActor in
+                if track == nil {
+                    LiveLyrics.shared.stop()
+                } else {
+                    LiveLyrics.shared.sync(track: track,
+                                           lines: lines,
+                                           time: time,
+                                           duration: total,
+                                           isPlaying: playing)
+                }
+            }
+        }
     }
 
     // MARK: - 锁屏 / 耳机控制

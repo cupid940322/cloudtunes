@@ -23,6 +23,7 @@ struct ProfileView: View {
                     VStack(spacing: 20) {
                         statsRow
                         mySection
+                        playbackSection
                         providerSection
                         browseSection
                         dataSection
@@ -141,6 +142,20 @@ struct ProfileView: View {
                     .padding(.vertical, 12)
                 }
                 .buttonStyle(.plain)
+            }
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .padding(.horizontal, Theme.pagePadding)
+        }
+    }
+
+    @ViewBuilder
+    private var playbackSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "播放")
+            VStack(spacing: 0) {
+                if #available(iOS 16.1, *) {
+                    LiveLyricsToggleRow()
+                }
             }
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
             .padding(.horizontal, Theme.pagePadding)
@@ -405,5 +420,41 @@ struct CacheManageView: View {
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         for f in files { try? FileManager.default.removeItem(at: f) }
         refresh()
+    }
+}
+
+/// 锁屏滚动歌词开关（Live Activity）
+@available(iOS 16.1, *)
+private struct LiveLyricsToggleRow: View {
+    @State private var enabled = true
+    @State private var loaded = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "captions.bubble.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("锁屏滚动歌词").font(.subheadline).foregroundStyle(.primary)
+                Text("锁屏与灵动岛显示当前这一句")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: $enabled)
+                .labelsHidden()
+                .tint(Theme.accent)
+                .onChange(of: enabled) { value in
+                    guard loaded else { return }
+                    LiveLyrics.shared.setEnabled(value)
+                }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .onAppear {
+            enabled = LiveLyrics.shared.isEnabled
+            loaded = true
+        }
     }
 }
