@@ -4,6 +4,7 @@ import SwiftUI
 struct ProfileView: View {
     @ObservedObject private var store = LibraryStore.shared
     @ObservedObject private var auth = AuthState.shared
+    @ObservedObject private var sync = SyncService.shared
     @State private var confirmClearRecent = false
 
     private var signedInKinds: [CloudKind] {
@@ -103,6 +104,35 @@ struct ProfileView: View {
                         Spacer()
                         Text("\(store.favoriteIDs.count) 首")
                             .font(.caption).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.quaternary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+                Divider().padding(.leading, 52)
+                NavigationLink {
+                    AccountView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 26)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("账号与同步").font(.subheadline).foregroundStyle(.primary)
+                            Text(sync.isSignedIn
+                                 ? "@\(sync.login ?? "GitHub") · \(sync.lastSyncAt.map(AccountView.relative) ?? "待同步")"
+                                 : "登录后换设备不用重新刮削")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if sync.status.isRunning {
+                            ProgressView().scaleEffect(0.8)
+                        }
                         Image(systemName: "chevron.right")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.quaternary)

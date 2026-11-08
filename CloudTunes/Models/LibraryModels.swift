@@ -11,6 +11,8 @@ struct MusicLibrary: Identifiable, Codable, Hashable {
     var createdAt: Date
     var lastScanAt: Date?
     var includeSubfolders: Bool?
+    /// 同步用：最后一次修改时间（改名 / 增删曲目 / 重新扫描都会刷新）
+    var updatedAt: Date? = nil
 
     var providerKind: CloudKind { CloudKind(rawValue: providerKindRaw) ?? .guangya }
     var scansSubfolders: Bool { includeSubfolders ?? true }
@@ -106,6 +108,11 @@ struct LibraryTrack: Identifiable, Codable, Hashable {
     /// 从库根到所在目录的文件夹名（不含库根），用来推断歌手/专辑
     /// 「周杰伦/范特西/晴天.flac」→ ["周杰伦", "范特西"]
     var folderPath: [String]? = nil
+    /// 封面来源 URL（在线匹配时记下来）。跨设备同步只传 URL，
+    /// 新设备按它重新下载并缓存成本地 artworkFile，不必重传图片。
+    var artworkURL: String? = nil
+    /// 同步用：最后一次修改时间。合并时同一首歌取这个时间较新的一方。
+    var updatedAt: Date? = nil
 
     var displayArtist: String { (artist?.isEmpty == false) ? artist! : "未知艺术家" }
     var displayAlbum: String { (album?.isEmpty == false) ? album! : "未知专辑" }

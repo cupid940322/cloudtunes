@@ -16,6 +16,8 @@ enum MetadataScraper {
         var album: String?
         var duration: Double?
         var artworkFile: String?
+        /// 封面来源 URL：跨设备同步只传这个，新设备按它重新下载，不用重传图片
+        var artworkURL: String?
         var neteaseID: Int?
         /// 在线匹配的置信度（0~1），0 表示没走在线或没匹配上
         var confidence: Double = 0
@@ -145,6 +147,7 @@ enum MetadataScraper {
                 if result.artworkFile == nil, let cover = info.coverURL,
                    let data = await MusicSearchService.downloadImage(cover) {
                     result.artworkFile = saveArtwork(data, key: trackID)
+                    result.artworkURL = cover
                 }
             }
         }
@@ -153,8 +156,9 @@ enum MetadataScraper {
         let artworkQueryTitle = result.title ?? fallbackTitle
         if result.artworkFile == nil, !artworkQueryTitle.isEmpty {
             let artist = result.artist ?? fallbackArtist
-            if let data = await fetchITunesArtwork(title: artworkQueryTitle, artist: artist) {
-                result.artworkFile = saveArtwork(data, key: trackID)
+            if let hit = await fetchITunesArtwork(title: artworkQueryTitle, artist: artist) {
+                result.artworkFile = saveArtwork(hit.data, key: trackID)
+                result.artworkURL = hit.url
             }
         }
         return result
@@ -201,7 +205,7 @@ enum MetadataScraper {
 
     // MARK: - iTunes 封面（带校验）
 
-    private static func fetchITunesArtwork(title: String, artist: String?) async -> Data? {
+    private static func fetchITunesArtwork(title: String, artist: String?) async -> (data: Data, url: String)? {
         let term = [artist, title].compactMap { $0 }.joined(separator: " ")
         var comps = URLComponents(string: "https://itunes.apple.com/search")!
         comps.queryItems = [
@@ -237,7 +241,8 @@ enum MetadataScraper {
         guard bestScore >= 0.72, let art = picked?["artworkUrl100"] as? String else { return nil }
 
         let big = art.replacingOccurrences(of: "100x100", with: "600x600")
-        guard let artURL = URL(string: big) else { return nil }
-        return (try? await URLSession.shared.data(for: URLRequest(url: artURL)))?.0
+        guard let artURL = URL(string: big),
+              let data = (try? await URLSession.shared.data(for: URLRequest(url: artURL)))?.0 else { return nil }
+        return (data, big)
     }
 }

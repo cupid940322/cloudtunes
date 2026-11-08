@@ -16,6 +16,21 @@ final class LibraryStore: ObservableObject {
     private let recentKey = "cloudtunes.recent"
     private let maxRecent = 60
 
+    /// 同步墓碑：删除必须留痕，否则另一台设备会把删掉的歌「同步复活」
+    private var deletedLibraries: [String: Date] = [:]
+    private var deletedTracks: [String: [String: Date]] = [:]
+    private let deletedLibsKey = "cloudtunes.sync.deletedLibraries"
+    private let deletedTracksKey = "cloudtunes.sync.deletedTracks"
+    private let localChangedKey = "cloudtunes.sync.localChangedAt"
+
+    /// 本机数据最后一次真实改动的时间。
+    /// 用它而不是「现在」当快照时间戳，否则每次同步都会让云端看起来更新，
+    /// 另一台设备就会一直拿远端覆盖本地。
+    private var localChangedAt: Date {
+        get { UserDefaults.standard.object(forKey: localChangedKey) as? Date ?? .distantPast }
+        set { UserDefaults.standard.set(newValue, forKey: localChangedKey) }
+    }
+
     init() {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         storageURL = dir.appendingPathComponent("libraries.json")
@@ -31,7 +46,8 @@ final class LibraryStore: ObservableObject {
         libraries = libs
     }
 
-    private func save() {
+    private func save(touch: Bool = true) {
+        if touch { localChangedAt = Date() }
         guard let data = try? JSONEncoder().encode(libraries) else { return }
         try? data.write(to: storageURL)
     }
@@ -60,12 +76,216 @@ final class LibraryStore: ObservableObject {
         if let recent = defaults.array(forKey: recentKey) as? [String] {
             recentIDs = recent
         }
+        if let data = defaults.data(forKey: deletedLibsKey),
+           let v = try? SyncService.decoder().decode([String: Date].self, from: data) {
+            deletedLibraries = v
+        }
+        if let data = defaults.data(forKey: deletedTracksKey),
+           let v = try? SyncService.decoder().decode([String: [String: Date]].self, from: data) {
+            deletedTracks = v
+        }
     }
 
-    private func savePrefs() {
+    private func savePrefs(touch: Bool = true) {
+        if touch { localChangedAt = Date() }
         let defaults = UserDefaults.standard
         defaults.set(Array(favoriteIDs), forKey: favoritesKey)
         defaults.set(recentIDs, forKey: recentKey)
+        if let data = try? SyncService.encoder().encode(deletedLibraries) {
+            defaults.set(data, forKey: deletedLibsKey)
+        }
+        if let data = try? SyncService.encoder().encode(deletedTracks) {
+            defaults.set(data, forKey: deletedTracksKey)
+        }
+    }
+
+    // MARK: - 跨设备同步
+
+    /// 生成传给 SyncService 的本地快照。
+    /// 曲目不放在这里（每个库单独一个文件上传），只带库的轻量描述。
+    func syncSnapshot(deviceName: String) -> SyncAccount {
+        let metas = libraries.map { lib in
+            LibraryMeta(id: lib.id,
+                        name: lib.name,
+                        providerKindRaw: lib.providerKindRaw,
+                        folderID: lib.folderID,
+                        folderName: lib.folderName,
+                        includeSubfolders: lib.scansSubfolders,
+                        createdAt: lib.createdAt,
+                        lastScanAt: lib.lastScanAt,
+                        updatedAt: lib.updatedAt ?? lib.lastScanAt ?? lib.createdAt)
+        }
+        // 本机数据的真实最新改动时间（取库和收藏/记录里较新的那个）
+        let newestLibrary = metas.map(\.updatedAt).max() ?? .distantPast
+        let stamp = max(newestLibrary, localChangedAt)
+        return SyncAccount(schemaVersion: 1,
+                           updatedAt: stamp,
+                           deviceName: deviceName,
+                           libraries: metas,
+                           favorites: Array(favoriteIDs),
+                           recent: recentIDs,
+                           session: PlaybackSession.load(),
+                           deletedLibraries: deletedLibraries,
+                           deletedTracks: deletedTracks)
+    }
+
+    /// 把合并结果落到本地。同步过程本身不该再反过来触发一轮上传，
+    /// 所以这里不调 scheduleSync。
+    func applySync(libraries newLibs: [MusicLibrary],
+                   favorites: Set<String>,
+                   recent: [String],
+                   session: PlaybackSession?,
+                   deletedLibraries libTombstones: [String: Date] = [:],
+                   deletedTracks trackTombstones: [String: [String: Date]] = [:]) {
+        libraries = newLibs
+        favoriteIDs = favorites
+        recentIDs = recent
+        if !libTombstones.isEmpty {
+            deletedLibraries.merge(libTombstones) { old, new in min(old, new) }
+        }
+        for (libID, marks) in trackTombstones {
+            var existing = deletedTracks[libID] ?? [:]
+            for (tid, at) in marks {
+                existing[tid] = min(existing[tid] ?? at, at)
+            }
+            deletedTracks[libID] = existing
+        }
+        // 同步下来不算「本机改动」，否则会立刻反过来再推一轮
+        save(touch: false)
+        savePrefs(touch: false)
+
+        // 合并下来的「继续播放」只在本机还没有更新的会话时才采用，
+        // 否则正在听的时候同步一下会把播放队列换掉。
+        // 只写文件不换当前队列：下次启动生效，不打断正在播的歌。
+        if let session {
+            if let local = PlaybackSession.load() {
+                if session.updatedAt > local.updatedAt { session.save() }
+            } else {
+                session.save()
+            }
+        }
+    }
+
+    /// 同步下来的曲目只有封面 URL，本地图要补。
+    /// 边补边落盘，界面上的封面会分批逐个出现。
+    private var backfilling = false
+
+    func backfillArtwork(libraryIDs: [String]) {
+        guard !backfilling else { return }
+        backfilling = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.backfilling = false }
+
+            for libID in libraryIDs {
+                // 第一步：老数据（这个字段还没诞生的年代刮的）没有封面 URL，
+                // 但存了网易云 ID，可以拿它把封面地址反查回来。
+                await self.resolveMissingArtworkURLs(libraryID: libID)
+
+                // 第二步：按 URL 把图下载到本地缓存
+                guard let lib = self.library(id: libID) else { continue }
+                let pending = lib.tracks.filter { t in
+                    guard let url = t.artworkURL, !url.isEmpty else { return false }
+                    guard let file = t.artworkFile, !file.isEmpty else { return true }
+                    return MetadataScraper.artworkURL(file: file) == nil
+                }
+                guard !pending.isEmpty else { continue }
+
+                let batchSize = 4
+                var cursor = 0
+                while cursor < pending.count {
+                    let slice = Array(pending[cursor..<min(cursor + batchSize, pending.count)])
+                    let results = await withTaskGroup(of: (String, String?).self) { group in
+                        for t in slice {
+                            group.addTask {
+                                guard let url = t.artworkURL,
+                                      let data = await MusicSearchService.downloadImage(url) else {
+                                    return (t.id, nil)
+                                }
+                                return (t.id, MetadataScraper.saveArtwork(data, key: t.id))
+                            }
+                        }
+                        var out: [(String, String?)] = []
+                        for await item in group { out.append(item) }
+                        return out
+                    }
+                    if let li = libraries.firstIndex(where: { $0.id == libID }) {
+                        var changed = false
+                        for (trackID, name) in results {
+                            guard let name,
+                                  let ti = libraries[li].tracks.firstIndex(where: { $0.id == trackID }) else { continue }
+                            libraries[li].tracks[ti].artworkFile = name
+                            changed = true
+                        }
+                        // 补封面属于本机缓存行为，不该被当成「用户改了数据」推回云端
+                        if changed { save(touch: false) }
+                    }
+                    cursor += batchSize
+                }
+            }
+        }
+    }
+
+    /// 用 neteaseID 反查封面地址，补进 artworkURL。
+    /// 接口一次最多接受 20 个 id，所以分批走。
+    private func resolveMissingArtworkURLs(libraryID: String) async {
+        guard let lib = library(id: libraryID) else { return }
+        let needed = Set(lib.tracks.filter {
+            ($0.artworkURL ?? "").isEmpty && ($0.neteaseID ?? 0) > 0
+        }.compactMap { $0.neteaseID })
+        guard !needed.isEmpty else { return }
+
+        var resolved: [Int: String] = [:]
+        let ids = Array(needed)
+        var start = 0
+        while start < ids.count {
+            let chunk = Array(ids[start..<min(start + 20, ids.count)])
+            let detail = await MusicSearchService.neteaseDetails(ids: chunk)
+            for (k, v) in detail where !(v.coverURL ?? "").isEmpty {
+                resolved[k] = v.coverURL
+            }
+            start += 20
+        }
+        guard !resolved.isEmpty,
+              let li = libraries.firstIndex(where: { $0.id == libraryID }) else { return }
+
+        var changed = false
+        for i in libraries[li].tracks.indices {
+            guard (libraries[li].tracks[i].artworkURL ?? "").isEmpty,
+                  let nid = libraries[li].tracks[i].neteaseID,
+                  let url = resolved[nid] else { continue }
+            libraries[li].tracks[i].artworkURL = url
+            changed = true
+        }
+        if changed { save(touch: false) }
+    }
+
+    /// 新设备扫描前先问问云端有没有已经刮好的结果。
+    /// 有的话直接填进去并标记 scraped，整首歌就完全跳过刮削——
+    /// 这是「换设备不用重新刮」的核心。
+    func reuseCloudMetadata(_ tracks: inout [LibraryTrack], kind: CloudKind) {
+        guard GitHubAccount.isSignedIn else { return }
+        // 从所有本地库里找同 provider 的已刮削记录（同步下来的库也在其中）
+        var index: [String: LibraryTrack] = [:]
+        for lib in libraries where lib.providerKindRaw == kind.rawValue {
+            for t in lib.tracks where t.scraped {
+                index[t.fileID] = t
+            }
+        }
+        guard !index.isEmpty else { return }
+        for i in tracks.indices {
+            guard let hit = index[tracks[i].fileID] else { continue }
+            tracks[i].title = hit.title
+            tracks[i].artist = hit.artist ?? tracks[i].artist
+            tracks[i].album = hit.album ?? tracks[i].album
+            tracks[i].duration = hit.duration ?? tracks[i].duration
+            tracks[i].artworkFile = hit.artworkFile
+            tracks[i].artworkURL = hit.artworkURL
+            tracks[i].neteaseID = hit.neteaseID
+            tracks[i].confidence = hit.confidence
+            tracks[i].metaSource = hit.metaSource
+            tracks[i].scraped = true
+        }
     }
 
     // MARK: - 查询
@@ -110,6 +330,7 @@ final class LibraryStore: ObservableObject {
             favoriteIDs.insert(trackID)
         }
         savePrefs()
+        SyncService.shared.scheduleSync(reason: "收藏变化")
     }
 
     func markPlayed(_ trackID: String) {
@@ -117,24 +338,33 @@ final class LibraryStore: ObservableObject {
         recentIDs.insert(trackID, at: 0)
         if recentIDs.count > maxRecent { recentIDs = Array(recentIDs.prefix(maxRecent)) }
         savePrefs()
+        // 切歌很频繁，给一个更长的延迟，等停下来再推
+        SyncService.shared.scheduleSync(reason: "播放记录", delay: 25)
     }
 
     func clearRecent() {
         recentIDs = []
         savePrefs()
+        SyncService.shared.scheduleSync(reason: "清空播放记录")
     }
 
     // MARK: - 库管理
 
     func removeLibrary(id: String) {
         libraries.removeAll { $0.id == id }
+        // 留墓碑：不然同步时另一台设备还留着这个库，会被"合并"回来
+        deletedLibraries[id] = Date()
         save()
+        savePrefs()
+        SyncService.shared.scheduleSync(reason: "删除音乐库")
     }
 
     func renameLibrary(id: String, to name: String) {
         guard let idx = libraries.firstIndex(where: { $0.id == id }) else { return }
         libraries[idx].name = name
+        libraries[idx].updatedAt = Date()
         save()
+        SyncService.shared.scheduleSync(reason: "重命名音乐库")
     }
 
     // MARK: - 扫描
@@ -145,6 +375,20 @@ final class LibraryStore: ObservableObject {
                     folder: CloudFile,
                     includeSubfolders: Bool = true) async {
         guard let provider = ProviderRegistry.provider(kind: providerKind) else { return }
+
+        // 已经有同一个云盘文件夹的库（多半是别的设备同步过来的）就不新建，
+        // 直接在它身上重新扫描：刮削结果全都还在，这次扫描只补新增的歌。
+        if let existing = libraries.first(where: {
+            $0.providerKindRaw == providerKind.rawValue && $0.folderID == folder.id
+        }) {
+            if let idx = libraries.firstIndex(where: { $0.id == existing.id }) {
+                libraries[idx].updatedAt = Date()
+            }
+            save()
+            await rescan(libraryID: existing.id)
+            return
+        }
+
         let libID = UUID().uuidString
         progress[libID] = ScanProgress(phase: includeSubfolders ? "扫描目录…" : "读取目录…")
         // 扫描 + 刮削可能持续很久，熄屏/切后台时保活，避免被系统挂起
@@ -163,20 +407,28 @@ final class LibraryStore: ObservableObject {
         libraries.append(lib)
         save()
 
-        let found = await collect(provider: provider, kind: providerKind, root: folder,
+        var found = await collect(provider: provider, kind: providerKind, root: folder,
                                   includeSubfolders: includeSubfolders, libID: libID)
+        // 别的设备已经刮过的，直接沿用，一首都不重刮
+        let pendingBefore = found.filter { !$0.scraped }.count
+        reuseCloudMetadata(&found, kind: providerKind)
+        let hit = pendingBefore - found.filter { !$0.scraped }.count
 
         if let idx = libraries.firstIndex(where: { $0.id == libID }) {
             libraries[idx].tracks = found
             libraries[idx].lastScanAt = Date()
+            libraries[idx].updatedAt = Date()
         }
         save()
 
-        progress[libID]?.phase = found.isEmpty ? "没有找到音乐文件" : "入库完成，开始刮削…"
+        progress[libID]?.phase = hit > 0
+            ? "沿用云端刮削 \(hit) 首，其余开始刮削…"
+            : (found.isEmpty ? "没有找到音乐文件" : "入库完成，开始刮削…")
         progress[libID]?.totalToScrape = found.count
 
         await scrapeAll(libraryID: libID, providerKind: providerKind)
         progress[libID] = nil
+        SyncService.shared.scheduleSync(reason: "扫描完成")
     }
 
     /// 重新扫描已有库（只补新增文件，随后补刮未刮过的）
@@ -187,8 +439,10 @@ final class LibraryStore: ObservableObject {
         BackgroundKeepAlive.shared.begin()
         defer { BackgroundKeepAlive.shared.end() }
         let root = CloudFile(id: lib.folderID, name: lib.folderName, size: 0, isFolder: true)
-        let found = await collect(provider: provider, kind: lib.providerKind, root: root,
+        var found = await collect(provider: provider, kind: lib.providerKind, root: root,
                                   includeSubfolders: lib.scansSubfolders, libID: libraryID)
+        // 新增的文件先在云端找有没有刮好的记录；刚换设备时这一条能省掉整库重刮
+        reuseCloudMetadata(&found, kind: lib.providerKind)
 
         var known = Set(lib.tracks.map { $0.fileID })
         var added = 0
@@ -207,11 +461,13 @@ final class LibraryStore: ObservableObject {
                 }
             }
             libraries[idx].lastScanAt = Date()
+            libraries[idx].updatedAt = Date()
         }
         save()
         progress[libraryID]?.phase = "新增 \(added) 首，开始刮削…"
         await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
         progress[libraryID] = nil
+        SyncService.shared.scheduleSync(reason: "扫描完成")
     }
 
     /// 老库补文件夹路径（旧版本扫描时没记录 folderPath）。
@@ -267,6 +523,7 @@ final class LibraryStore: ObservableObject {
         save()
         await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
         progress[libraryID] = nil
+        SyncService.shared.scheduleSync(reason: "重新刮削完成")
     }
 
     /// 只补缺失：不动已有的歌名/歌手，只处理和在线补齐「没封面 / 没专辑 / 之前只有文件名」的歌。
@@ -294,6 +551,7 @@ final class LibraryStore: ObservableObject {
         save()
         await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
         progress[libraryID] = nil
+        SyncService.shared.scheduleSync(reason: "重新刮削完成")
     }
 
     /// 只重刮单曲（不动其他）
@@ -314,6 +572,7 @@ final class LibraryStore: ObservableObject {
             if let v = meta.album, !v.isEmpty { t.album = v }
             if let v = meta.duration { t.duration = v }
             if let v = meta.artworkFile { t.artworkFile = v }
+            if let v = meta.artworkURL { t.artworkURL = v }
             if let v = meta.neteaseID { t.neteaseID = v }
             t.confidence = meta.matched ? meta.confidence : (t.confidence ?? 1)
             t.metaSource = meta.matched ? "online" : "filename"
@@ -349,6 +608,7 @@ final class LibraryStore: ObservableObject {
             if let v = info.duration { t.duration = v }
             t.neteaseID = info.neteaseID
             if let a = artworkName { t.artworkFile = a }
+            t.artworkURL = info.coverURL
             t.confidence = 1.0
             t.metaSource = "manual"
             t.scraped = true
@@ -407,7 +667,8 @@ final class LibraryStore: ObservableObject {
                     metaSource: "filename",
                     confidence: nil,
                     parentName: isRoot ? nil : current.name,
-                    folderPath: current.path.isEmpty ? nil : current.path))
+                    folderPath: current.path.isEmpty ? nil : current.path,
+                    updatedAt: now))
             }
             progress[libID]?.foundTracks = found.count
         }
@@ -490,12 +751,15 @@ final class LibraryStore: ObservableObject {
                         if let v = meta.album, !v.isEmpty { tracks[ti].album = v }
                         if let v = meta.duration { tracks[ti].duration = v }
                         if let v = meta.artworkFile { tracks[ti].artworkFile = v }
+                        if let v = meta.artworkURL { tracks[ti].artworkURL = v }
                         if let v = meta.neteaseID { tracks[ti].neteaseID = v }
                         if meta.matched { tracks[ti].confidence = meta.confidence }
                         tracks[ti].metaSource = meta.matched ? "online" : "filename"
                         tracks[ti].scraped = true
+                        tracks[ti].updatedAt = Date()
                     } else {
                         tracks[ti].scraped = true
+                        tracks[ti].updatedAt = Date()
                     }
                 }
                 libraries[li].tracks = tracks
@@ -522,9 +786,12 @@ final class LibraryStore: ObservableObject {
         guard let li = libraries.firstIndex(where: { $0.id == libraryID }),
               let ti = libraries[li].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         mutate(&libraries[li].tracks[ti])
+        libraries[li].tracks[ti].updatedAt = Date()
+        libraries[li].updatedAt = Date()
         // 元数据变了就把新信息同步给正在播放的队列，
         // 播放页 / 锁屏 / 小组件才会跟着更新（否则一直显示旧歌手）
         let kind = libraries[li].providerKind
         PlayerManager.shared.refreshTrackMetadata(libraries[li].tracks[ti].toTrack(kind: kind))
+        SyncService.shared.scheduleSync(reason: "元数据更新")
     }
 }

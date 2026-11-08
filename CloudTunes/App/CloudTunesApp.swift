@@ -49,6 +49,7 @@ final class AppUIState: ObservableObject {
 struct RootView: View {
     @ObservedObject private var ui = AppUIState.shared
     @State private var tab: AppTab = .home
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -74,6 +75,14 @@ struct RootView: View {
         .onOpenURL { url in
             // 小组件点击：cloudtunes://player|favorites|recent|shuffle|resume
             WidgetDeepLink.handle(url)
+        }
+        .task {
+            // 冷启动先跟云端对一次账：另一台设备加的歌、改的元数据直接出现
+            await SyncService.shared.syncIfStale()
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            Task { await SyncService.shared.syncIfStale() }
         }
         .tint(Theme.accent)
     }
