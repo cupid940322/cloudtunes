@@ -24,9 +24,10 @@ jobs:
         run: |
           echo "run id: ${{ github.event.workflow_run.id }}"
           echo "attempt: ${{ github.event.workflow_run.run_attempt }}"
-          # 最多重试 6 次，避免长期占用排队资源
-          if [ "${{ github.event.workflow_run.run_attempt }}" -ge 6 ]; then
-            echo "已重试 6 次仍未拿到 runner，放弃。等每天 UTC 10:00 的定时构建。"
+          # 最多重试 12 次：cancelled 的 job 没分配到机器、不消耗额度，
+          # 多试几次是无害的，反而能撞上池子偶尔空出来的瞬间
+          if [ "${{ github.event.workflow_run.run_attempt }}" -ge 12 ]; then
+            echo "已重试 12 次仍未拿到 runner，放弃。等每天 UTC 10:00 的定时构建。"
             exit 0
           fi
           curl -sS -X POST \
