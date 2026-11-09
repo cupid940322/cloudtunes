@@ -311,11 +311,35 @@ final class PlayerManager: NSObject, ObservableObject {
               let provider = ProviderRegistry.provider(kind: session.tracks[session.index].providerKind)
         else { return }
         isShuffled = false
-        queue = session.tracks
-        originalQueue = session.tracks
-        playAt(session.index, provider: provider)
+
+        // 上次是「单曲点播」（在文件浏览 / 搜索结果里点的单首，队列只有一首）时，
+        // 把这首歌所在的整张音乐库补进队列——点继续播放要得到完整列表，
+        // 而不是播一首就停。
+        var tracks = session.tracks
+        var index = session.index
+        if tracks.count <= 1, let single = tracks.first,
+           let expanded = Self.expandSingleTrack(single) {
+            tracks = expanded.tracks
+            index = expanded.index
+        }
+
+        queue = tracks
+        originalQueue = tracks
+        playAt(index, provider: provider)
         // playAt 内部会清零，所以在它之后设置
         pendingSeek = session.position
+    }
+
+    /// 找到这首歌所属的音乐库，返回整库曲目与它在其中的位置。
+    /// 找不到（库被删了 / 文件已移除）就返回 nil，保持原来的单曲队列。
+    private static func expandSingleTrack(_ track: Track) -> (tracks: [Track], index: Int)? {
+        for lib in LibraryStore.shared.libraries {
+            guard let kind = CloudKind(rawValue: lib.providerKindRaw),
+                  let pos = lib.tracks.firstIndex(where: { $0.id == track.id }) else { continue }
+            let list = lib.tracks.map { $0.toTrack(kind: kind) }
+            return (list, pos)
+        }
+        return nil
     }
 
     /// 资料库里的歌曲信息被修改（手动匹配 / 手动修正 / 重新刮削）后，同步刷新播放队列里的旧拷贝。
