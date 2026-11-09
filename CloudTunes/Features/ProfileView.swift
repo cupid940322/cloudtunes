@@ -1,4 +1,3 @@
-import ActivityKit
 import SwiftUI
 
 /// 我的：网盘账号、云盘浏览、数据管理
@@ -154,9 +153,7 @@ struct ProfileView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "播放")
             VStack(spacing: 0) {
-                if #available(iOS 16.1, *) {
-                    LiveLyricsToggleRow()
-                }
+                LockScreenLyricsToggleRow()
             }
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
             .padding(.horizontal, Theme.pagePadding)
@@ -424,59 +421,34 @@ struct CacheManageView: View {
     }
 }
 
-/// 锁屏滚动歌词开关（Live Activity）
-@available(iOS 16.1, *)
-private struct LiveLyricsToggleRow: View {
-    @State private var enabled = true
-    @State private var loaded = false
-    @State private var systemEnabled = true
+/// 锁屏歌词开关：把系统锁屏播放控件里的文字换成歌词
+private struct LockScreenLyricsToggleRow: View {
+    @State private var enabled = LockScreenLyrics.isEnabled
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "captions.bubble.fill")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("锁屏滚动歌词").font(.subheadline).foregroundStyle(.primary)
-                    Text("锁屏与灵动岛显示当前这一句")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("", isOn: $enabled)
-                    .labelsHidden()
-                    .tint(Theme.accent)
-                    .onChange(of: enabled) { value in
-                        guard loaded else { return }
-                        LiveLyrics.shared.setEnabled(value)
-                    }
+        HStack(spacing: 12) {
+            Image(systemName: "captions.bubble.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("锁屏歌词").font(.subheadline).foregroundStyle(.primary)
+                Text("锁屏播放区显示当前这一句，歌名与歌手退到第二行")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
-            // 系统层面的开关不在 App 控制范围内，必须主动暴露出来，
-            // 否则用户只会看到「锁屏上没出现卡片」而不知道去哪里打开
-            if !systemEnabled {
-                Divider().padding(.leading, 52)
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                    Text("系统未允许实时活动：设置 → 汤圆云音盒 → 实时活动")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    Spacer()
+            Spacer(minLength: 8)
+            Toggle("", isOn: $enabled)
+                .labelsHidden()
+                .tint(Theme.accent)
+                .onChange(of: enabled) { value in
+                    LockScreenLyrics.isEnabled = value
+                    // 立刻把锁屏刷新一遍：关掉就恢复歌名歌手，打开就换成歌词
+                    PlayerManager.shared.refreshNowPlaying()
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-            }
         }
-        .onAppear {
-            enabled = LiveLyrics.shared.isEnabled
-            systemEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
-            loaded = true
-        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 }

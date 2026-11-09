@@ -61,6 +61,8 @@ final class PlayerManager: NSObject, ObservableObject {
     /// 锁屏封面缓存（避免每秒读盘）
     private var npArtworkKey: String?
     private var npArtwork: MPMediaItemArtwork?
+    /// 锁屏上当前显示的是第几句歌词（换句才重写 nowPlayingInfo，避免刷爆系统限流）
+    private var nowPlayingLineIndex: Int?
     /// 歌词预取任务
     private var prefetchTask: Task<Void, Never>?
     /// 云盘目录缓存（同名 .lrc 查找用，避免每首歌都重新列目录）
@@ -147,59 +149,39 @@ final class PlayerManager: NSObject, ObservableObject {
             self?.updateNowPlaying()
             self?.persistSession()
         }
-        bindLiveLyrics()
+        bindLockScreenLyrics()
     }
 
     // MARK: - 锁屏滚动歌词
 
-    /// 锁屏 / 灵动岛的歌词卡片靠这里驱动。
-    /// 只在四个真正影响显示的时机刷新：进度跳动（节流）、播放暂停、歌词加载完、换歌。
-    private func bindLiveLyrics() {
-        guard #available(iOS 16.1, *) else { return }
-
-        // 进度最快 0.4 秒采样一次；歌词行本身是以秒为单位的，这个精度够用，
-        // 又不至于把卡片更新频率打到系统限流阈值。
+    /// 锁屏播放区那两行字是系统绘制的，App 只能替换文字内容。
+    /// 这里订阅播放进度，**只在换到下一句时**重写一次 nowPlayingInfo，
+    /// 锁屏上看到的效果就是歌词在原地滚动。
+    private func bindLockScreenLyrics() {
+        // 进度最快 0.4 秒采样一次：歌词行以秒为单位，这个精度足够，
+        // 又远低于系统对 nowPlayingInfo 的写入频率限制。
         clock.$time
             .throttle(for: .seconds(0.4), scheduler: RunLoop.main, latest: true)
-            .sink { [weak self] _ in self?.refreshLiveLyrics() }
-            .store(in: &cancellables)
-
-        $isPlaying
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.refreshLiveLyrics() }
-            .store(in: &cancellables)
-
-        $lyricLines
-            .map { $0.count }
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.refreshLiveLyrics() }
-            .store(in: &cancellables)
-
-        $currentIndex
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.refreshLiveLyrics() }
-            .store(in: &cancellables)
-    }
-
-    private func refreshLiveLyrics() {
-        if #available(iOS 16.1, *) {
-            let track = currentTrack
-            let lines = lyricLines
-            let time = currentTime
-            let total = duration
-            let playing = isPlaying
-            Task { @MainActor in
-                if track == nil {
-                    LiveLyrics.shared.stop()
-                } else {
-                    LiveLyrics.shared.sync(track: track,
-                                           lines: lines,
-                                           time: time,
-                                           duration: total,
-                                           isPlaying: playing)
-                }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let idx = LockScreenLyrics.isEnabled
+                    ? LockScreenLyrics.activeIndex(self.lyricLines, at: self.currentTime)
+                    : nil
+                guard idx != self.nowPlayingLineIndex else { return }
+                self.updateNowPlaying()
             }
-        }
+            .store(in: &cancellables)
+
+        // 换歌 / 歌词刚刮好：清掉「当前句」缓存，强制重写一次
+        $lyricLines
+            .map(\.count)
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.nowPlayingLineIndex = nil
+                self.updateNowPlaying()
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - 锁屏 / 耳机控制
@@ -231,16 +213,37 @@ final class PlayerManager: NSObject, ObservableObject {
         }
     }
 
+    /// 外部（设置里的开关）要求立刻刷新锁屏显示
+    func refreshNowPlaying() {
+        nowPlayingLineIndex = nil
+        updateNowPlaying()
+    }
+
     private func updateNowPlaying() {
         guard let track = currentTrack else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            nowPlayingLineIndex = nil
             return
         }
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: track.title,
-            MPMediaItemPropertyArtist: track.artist ?? "未知艺术家",
-        ]
-        if let album = track.album, !album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = album }
+
+        // 锁屏歌词：系统控件的位置是固定的，能改的只有文字内容 ——
+        //   第一行 ← Title，第二行 ← Artist
+        // 所以第一行放当前这句歌词，第二行退成「歌名 — 歌手」，让人还知道在听什么。
+        let lines = LockScreenLyrics.isEnabled ? lyricLines : []
+        let idx = LockScreenLyrics.activeIndex(lines, at: currentTime)
+        nowPlayingLineIndex = idx
+
+        var info: [String: Any] = [:]
+        if let idx, lines.indices.contains(idx) {
+            let text = lines[idx].text.trimmingCharacters(in: .whitespacesAndNewlines)
+            info[MPMediaItemPropertyTitle] = text.isEmpty ? "♪" : text
+            info[MPMediaItemPropertyArtist] = "\(track.title) — \(track.displayArtist)"
+        } else {
+            info[MPMediaItemPropertyTitle] = track.title
+            info[MPMediaItemPropertyArtist] = track.artist ?? "未知艺术家"
+            // 歌词模式下不写 AlbumTitle：系统会把第二行拼成「歌手 — 专辑」，串味
+            if let album = track.album, !album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = album }
+        }
         if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
@@ -304,6 +307,7 @@ final class PlayerManager: NSObject, ObservableObject {
     }
 
     /// 恢复上次的整个播放列表，并从停下的位置继续
+    @MainActor
     func resumeSavedSession() {
         guard let session = savedSession,
               !session.tracks.isEmpty,
@@ -332,6 +336,8 @@ final class PlayerManager: NSObject, ObservableObject {
 
     /// 找到这首歌所属的音乐库，返回整库曲目与它在其中的位置。
     /// 找不到（库被删了 / 文件已移除）就返回 nil，保持原来的单曲队列。
+    /// 需要读 LibraryStore（@MainActor），所以这里也标成 @MainActor。
+    @MainActor
     private static func expandSingleTrack(_ track: Track) -> (tracks: [Track], index: Int)? {
         for lib in LibraryStore.shared.libraries {
             guard let kind = CloudKind(rawValue: lib.providerKindRaw),

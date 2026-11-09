@@ -52,10 +52,6 @@ struct NowPlayingWidget: Widget {
 struct CloudTunesWidgetBundle: WidgetBundle {
     var body: some Widget {
         NowPlayingWidget()
-        // 锁屏滚动歌词（实时活动），iOS 16.1 起才有 ActivityKit
-        if #available(iOS 16.1, *) {
-            LyricsLiveActivity()
-        }
     }
 }
 
