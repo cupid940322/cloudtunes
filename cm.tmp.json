@@ -1,0 +1,49 @@
+[
+  {
+    "url": "https://api.github.com/repos/cupid940322/cloudtunes/comments/209223548",
+    "html_url": "https://github.com/cupid940322/cloudtunes/commit/be417da1acbfd846db06f9ad568be6e8d6f27126#commitcomment-209223548",
+    "id": 209223548,
+    "node_id": "CC_kwDOVaG7S84MeH98",
+    "user": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-actions%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-actions%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-actions%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "position": null,
+    "line": null,
+    "path": null,
+    "commit_id": "be417da1acbfd846db06f9ad568be6e8d6f27126",
+    "created_at": "2026-11-10T15:20:00Z",
+    "updated_at": "2026-11-10T15:20:00Z",
+    "body": "### 编译错误（error/fatal error）\n281:/Users/runner/work/cloudtunes/cloudtunes/CloudTunes/Shared/FavoriteWidget.swift:92:9: error: 'init(intent:label:)' is only available in iOS 17.0 or newer\n293:/Users/runner/work/cloudtunes/cloudtunes/CloudTunes/Shared/FavoriteWidget.swift:105:10: error: 'containerBackground(for:alignment:content:)' is only available in iOS 17.0 or newer\n305:/Users/runner/work/cloudtunes/cloudtunes/CloudTunes/Shared/FavoriteWidget.swift:105:36: error: 'widget' is only available in iOS 17.0 or newer\n370:** BUILD FAILED **\n373:The following build commands failed:\n\n### 出错文件定位\n/Users/runner/work/cloudtunes/cloudtunes/CloudTunes/Shared/FavoriteWidget.swift:92:9: error:\n/Users/runner/work/cloudtunes/cloudtunes/CloudTunes/Shared/FavoriteWidget.swift:105:10: error:\n/Users/runner/work/cloudtunes/cloudtunes/CloudTunes/Shared/FavoriteWidget.swift:105:36: error:\n\n### 日志末尾 40 行（每行截断 240 字符）\nFoundation.NSLock.unlock:2:11: note: 'unlock()' declared here\nopen func unlock()}\n          ^\n\nGenerateDSYMFile /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex.dSYM /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex/CloudTunesWidg\n    cd /Users/runner/work/cloudtunes/cloudtunes\n    /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/dsymutil /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex/CloudTunesWidget -o /Users/runner\n\nExtractAppIntentsMetadata (in target 'CloudTunesWidget' from project 'CloudTunes')\n    cd /Users/runner/work/cloudtunes/cloudtunes\n    /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/appintentsmetadataprocessor --toolchain-dir /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain --module-name Cl\n2026-11-10 15:19:43.041 appintentsmetadataprocessor[1600:7837] Starting appintentsmetadataprocessor export\n2026-11-10 15:19:43.175 appintentsmetadataprocessor[1600:7837] Writing Metadata.appintents\n2026-11-10 15:19:43.175 appintentsmetadataprocessor[1600:7837] Metadata root: /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex/Metadata.appintents\n\nAppIntentsSSUTraining (in target 'CloudTunesWidget' from project 'CloudTunes')\n    cd /Users/runner/work/cloudtunes/cloudtunes\n    /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/appintentsnltrainingprocessor --infoplist-path /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.a\n2026-11-10 15:19:43.292 appintentsnltrainingprocessor[1601:7844] Parsing options for appintentsnltrainingprocessor\n2026-11-10 15:19:43.294 appintentsnltrainingprocessor[1601:7844] Starting AppIntents SSU YAML Generation\n2026-11-10 15:19:43.418 appintentsnltrainingprocessor[1601:7844] No AppShortcuts found - Skipping.\n\nRegisterExecutionPolicyException /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex (in target 'CloudTunesWidget' from project 'CloudTunes')\n    cd /Users/runner/work/cloudtunes/cloudtunes\n    builtin-RegisterExecutionPolicyException /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex\n\nTouch /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex (in target 'CloudTunesWidget' from project 'CloudTunes')\n    cd /Users/runner/work/cloudtunes/cloudtunes\n    /usr/bin/touch -c /Users/runner/work/cloudtunes/cloudtunes/build/Build/Products/Release-iphoneos/CloudTunesWidget.appex\n\nnote: Disabling previews because SWIFT_VERSION is set and SWIFT_OPTIMIZATION_LEVEL=-O, expected -Onone (in target 'CloudTunesWidget' from project 'CloudTunes')\nnote: Disabling previews because SWIFT_VERSION is set and SWIFT_OPTIMIZATION_LEVEL=-O, expected -Onone (in target 'CloudTunes' from project 'CloudTunes')\n** BUILD FAILED **\n\n\nThe following build commands failed:\n\tSwiftCompile normal arm64 Compiling\\ AccountView.swift,\\ AccountsView.swift,\\ AirPlayRouteButton.swift,\\ AudioProbe.swift,\\ AudioRouteMonitor.swift,\\ BackgroundKeepAlive.swift,\\ BaiduProvider.swift,\\ CloudProvider.swift,\\ CloudTunesApp.swi\n\tCompileSwift normal arm64 (in target 'CloudTunes' from project 'CloudTunes')\n\tBuilding project CloudTunes with scheme CloudTunes and configuration Release\n(3 failures)",
+    "author_association": "CONTRIBUTOR",
+    "reactions": {
+      "url": "https://api.github.com/repos/cupid940322/cloudtunes/comments/209223548/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    }
+  }
+]

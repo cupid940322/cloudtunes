@@ -53,7 +53,7 @@ struct CloudTunesWidgetBundle: WidgetBundle {
     var body: some Widget {
         NowPlayingWidget()
         // 锁屏心形收藏按钮：可交互小组件需要 iOS 17
-        if #available(iOSApplicationExtension 17.0, *) {
+        if #available(iOS 17.0, *) {
             FavoriteWidget()
         }
     }
@@ -363,7 +363,7 @@ private enum WidgetTheme {
 struct WidgetBackgroundModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOSApplicationExtension 17.0, *) {
+        if #available(iOS 17.0, *) {
             content.containerBackground(for: .widget) { WidgetTheme.background }
         } else {
             content.background(WidgetTheme.background)

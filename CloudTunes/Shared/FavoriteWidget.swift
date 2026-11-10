@@ -15,7 +15,7 @@ import WidgetKit
 ///   → 小组件读镜像渲染心形（实心 = 已收藏）
 ///   → 点按后小组件进程切换收藏、重绘时间线
 ///   → 往 App Group 写 ping 文件，正在运行的 App 立刻重读镜像，界面上的小心脏也同步
-@available(iOSApplicationExtension 17.0, *)
+@available(iOS 17.0, *)
 struct ToggleFavoriteIntent: AppIntent {
     static var title: LocalizedStringResource = "收藏当前歌曲"
     static var description = IntentDescription("把正在播放的这首加进 / 移出「我喜欢的音乐」")
@@ -34,14 +34,14 @@ struct ToggleFavoriteIntent: AppIntent {
     }
 }
 
-@available(iOSApplicationExtension 17.0, *)
+@available(iOS 17.0, *)
 struct FavoriteEntry: TimelineEntry {
     let date: Date
     let hasTrack: Bool
     let favorited: Bool
 }
 
-@available(iOSApplicationExtension 17.0, *)
+@available(iOS 17.0, *)
 struct FavoriteProvider: TimelineProvider {
     func placeholder(in context: Context) -> FavoriteEntry {
         entry()
@@ -65,7 +65,7 @@ struct FavoriteProvider: TimelineProvider {
     }
 }
 
-@available(iOSApplicationExtension 17.0, *)
+@available(iOS 17.0, *)
 struct FavoriteWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FavoriteWidget", provider: FavoriteProvider()) { entry in
@@ -77,7 +77,7 @@ struct FavoriteWidget: Widget {
     }
 }
 
-@available(iOSApplicationExtension 17.0, *)
+@available(iOS 17.0, *)
 private struct FavoriteWidgetView: View {
     let entry: FavoriteEntry
 
