@@ -169,6 +169,8 @@ final class LibraryStore: ObservableObject {
     /// 同步下来的曲目只有封面 URL，本地图要补。
     /// 边补边落盘，界面上的封面会分批逐个出现。
     private var backfilling = false
+    /// 本次启动里「在线搜封面也没找到」的曲目，避免每个同步周期都白搜一轮
+    private var rescueFailedIDs = Set<String>()
 
     func backfillArtwork(libraryIDs: [String]) {
         guard !backfilling else { return }
@@ -189,40 +191,102 @@ final class LibraryStore: ObservableObject {
                     guard let file = t.artworkFile, !file.isEmpty else { return true }
                     return MetadataScraper.artworkURL(file: file) == nil
                 }
-                guard !pending.isEmpty else { continue }
-
-                let batchSize = 4
-                var cursor = 0
-                while cursor < pending.count {
-                    let slice = Array(pending[cursor..<min(cursor + batchSize, pending.count)])
-                    let results = await withTaskGroup(of: (String, String?).self) { group in
-                        for t in slice {
-                            group.addTask {
-                                guard let url = t.artworkURL,
-                                      let data = await MusicSearchService.downloadImage(url) else {
-                                    return (t.id, nil)
+                // 注意这里不能用 continue：后面还有第三步（连 URL 都没有的在线兜底）
+                if !pending.isEmpty {
+                    let batchSize = 4
+                    var cursor = 0
+                    while cursor < pending.count {
+                        let slice = Array(pending[cursor..<min(cursor + batchSize, pending.count)])
+                        let results = await withTaskGroup(of: (String, String?).self) { group in
+                            for t in slice {
+                                group.addTask {
+                                    guard let url = t.artworkURL,
+                                          let data = await MusicSearchService.downloadImage(url) else {
+                                        return (t.id, nil)
+                                    }
+                                    return (t.id, MetadataScraper.saveArtwork(data, key: t.id))
                                 }
-                                return (t.id, MetadataScraper.saveArtwork(data, key: t.id))
                             }
+                            var out: [(String, String?)] = []
+                            for await item in group { out.append(item) }
+                            return out
                         }
-                        var out: [(String, String?)] = []
-                        for await item in group { out.append(item) }
-                        return out
-                    }
-                    if let li = libraries.firstIndex(where: { $0.id == libID }) {
-                        var changed = false
-                        for (trackID, name) in results {
-                            guard let name,
-                                  let ti = libraries[li].tracks.firstIndex(where: { $0.id == trackID }) else { continue }
-                            libraries[li].tracks[ti].artworkFile = name
-                            changed = true
+                        if let li = libraries.firstIndex(where: { $0.id == libID }) {
+                            var changed = false
+                            for (trackID, name) in results {
+                                guard let name,
+                                      let ti = libraries[li].tracks.firstIndex(where: { $0.id == trackID }) else { continue }
+                                libraries[li].tracks[ti].artworkFile = name
+                                changed = true
+                            }
+                            // 补封面属于本机缓存行为，不该被当成「用户改了数据」推回云端
+                            if changed { save(touch: false) }
                         }
-                        // 补封面属于本机缓存行为，不该被当成「用户改了数据」推回云端
-                        if changed { save(touch: false) }
+                        cursor += batchSize
                     }
-                    cursor += batchSize
                 }
+
+                // 第三步：连 URL 都没有的（artworkURL 字段诞生前刮的老数据、
+                // 且非网易云来源），按「歌名 + 歌手」做一次仅封面的在线查找
+                await self.rescueMissingCovers(libraryID: libID)
             }
+        }
+    }
+
+    /// 仅封面的在线兜底：老数据在云端只有歌名歌手，没有封面地址，
+    /// neteaseID 也没有的（QQ / iTunes 来源）连反查都无从下手，新设备上就是空白。
+    /// 这里按「歌名 + 歌手」在线匹配，命中即下载落盘并记下 artworkURL——
+    /// URL 会随下次同步传回云端，等于顺手把云端数据也修好，其它设备同样受益。
+    private func rescueMissingCovers(libraryID: String) async {
+        guard let lib = library(id: libraryID) else { return }
+        let pending = lib.tracks.filter { t in
+            guard t.scraped, !t.title.isEmpty else { return false }
+            // 本地已经有能用的封面文件就不动
+            if let f = t.artworkFile, !f.isEmpty, MetadataScraper.artworkURL(file: f) != nil { return false }
+            // 本次启动里已经试过且没找到的不再重复搜（每个同步周期省一轮请求）
+            if rescueFailedIDs.contains(t.id) { return false }
+            return true
+        }
+        guard !pending.isEmpty else { return }
+
+        let batchSize = 3
+        var cursor = 0
+        while cursor < pending.count {
+            let slice = Array(pending[cursor..<min(cursor + batchSize, pending.count)])
+            let results = await withTaskGroup(of: (String, String?, String?).self) { group in
+                for t in slice {
+                    group.addTask {
+                        guard let cover = await MetadataScraper.coverHit(title: t.title, artist: t.artist),
+                              let data = await MusicSearchService.downloadImage(cover) else {
+                            return (t.id, nil, nil)
+                        }
+                        return (t.id, MetadataScraper.saveArtwork(data, key: t.id), cover)
+                    }
+                }
+                var out: [(String, String?, String?)] = []
+                for await item in group { out.append(item) }
+                return out
+            }
+            if let li = libraries.firstIndex(where: { $0.id == libraryID }) {
+                var changed = false
+                for (trackID, name, url) in results {
+                    guard let name, let url,
+                          let ti = libraries[li].tracks.firstIndex(where: { $0.id == trackID }) else { continue }
+                    libraries[li].tracks[ti].artworkFile = name
+                    libraries[li].tracks[ti].artworkURL = url
+                    changed = true
+                }
+                // 补封面属于本机缓存行为，不该被当成「用户改了数据」推回云端；
+                // 但 artworkURL 的变化会在下次同步时自然传上去（needsUpload 比较它）
+                if changed { save(touch: false) }
+            }
+            // 没找到的记下来，这个启动周期内不再重试
+            for (trackID, name, _) in results where name == nil {
+                rescueFailedIDs.insert(trackID)
+            }
+            cursor += batchSize
+            // 每批里有搜索请求，批间歇一下，别把在线源打疼了
+            try? await Task.sleep(nanoseconds: 400_000_000)
         }
     }
 

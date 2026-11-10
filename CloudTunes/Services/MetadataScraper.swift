@@ -169,6 +169,22 @@ enum MetadataScraper {
         await MusicSearchService.rankedCandidates(title: title, artist: artist)
     }
 
+    /// 仅封面的在线查找（换设备补封面兜底用）。
+    /// 网易云 / QQ 匹配命中（置信度 ≥ 0.75）取其封面；都没有再走 iTunes 兜底。
+    /// 宁缺勿错——匹配不上就返回 nil，宁可没封面也不贴错的。
+    static func coverHit(title: String, artist: String?) async -> String? {
+        let hint = artist?.trimmingCharacters(in: .whitespaces)
+        if let match = await MusicSearchService.bestMatch(title: title, artist: artist, artistHint: hint),
+           match.score >= 0.75,
+           let cover = match.info.coverURL, !cover.isEmpty {
+            return cover
+        }
+        if let hit = await fetchITunesArtwork(title: title, artist: artist) {
+            return hit.url
+        }
+        return nil
+    }
+
     // MARK: - 封面缓存
 
     static var artworkDir: URL {
