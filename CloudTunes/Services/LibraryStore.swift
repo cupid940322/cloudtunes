@@ -330,6 +330,8 @@ final class LibraryStore: ObservableObject {
             favoriteIDs.insert(trackID)
         }
         savePrefs()
+        // 锁屏那颗心的填充状态跟着变（App 内点收藏 / 从锁屏点收藏都走这里）
+        PlayerManager.shared.syncLikeState()
         SyncService.shared.scheduleSync(reason: "收藏变化")
     }
 

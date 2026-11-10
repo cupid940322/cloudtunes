@@ -211,6 +211,32 @@ final class PlayerManager: NSObject, ObservableObject {
             guard let self, let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self.seek(to: e.positionTime); return .success
         }
+
+        // 锁屏 / 控制中心的「收藏」心形按钮。
+        // 系统只在 App 注册了反馈命令（likeCommand）之后才会画这颗心，
+        // 心是空心还是实心由 isActive 决定 —— 换歌与收藏变化时都要 syncLikeState()。
+        let like = center.likeCommand
+        like.isEnabled = true
+        like.localizedTitle = "收藏"
+        like.localizedShortTitle = "收藏"
+        like.addTarget { [weak self] _ in
+            guard let self, let track = self.currentTrack else { return .noSuchContent }
+            let id = track.id
+            // 反馈命令的回调不保证在主线程，切回主线程再动 LibraryStore
+            Task { @MainActor in
+                LibraryStore.shared.toggleFavorite(id)
+                self.syncLikeState()
+            }
+            return .success
+        }
+    }
+
+    /// 把「当前这首是否已收藏」同步到锁屏那颗心上（实心 = 已收藏）。
+    /// 换歌、App 内点收藏、从锁屏点收藏之后都会调一次。
+    @MainActor
+    func syncLikeState() {
+        let liked = currentTrack.map { LibraryStore.shared.isFavorite($0.id) } ?? false
+        MPRemoteCommandCenter.shared().likeCommand.isActive = liked
     }
 
     /// 外部（设置里的开关）要求立刻刷新锁屏显示
@@ -517,6 +543,8 @@ final class PlayerManager: NSObject, ObservableObject {
         pendingSeek = 0
         let track = queue[index]
         nowPlayingTitle = track.title
+        // 换歌了，锁屏那颗心要跟着这首的收藏状态走
+        Task { @MainActor [weak self] in self?.syncLikeState() }
         currentTime = 0
         duration = 0
         npArtworkKey = nil
