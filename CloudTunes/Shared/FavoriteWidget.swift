@@ -22,12 +22,15 @@ struct ToggleFavoriteIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         guard let snap = WidgetBridge.load(), !snap.trackID.isEmpty else {
-            return .result(dialog: "当前没有正在播放的歌曲")
+            return .result(dialog: IntentDialog("当前没有正在播放的歌曲"))
         }
         let liked = WidgetBridge.toggleFavorite(trackID: snap.trackID)
         WidgetCenter.shared.reloadAllTimelines()
         WidgetBridge.notifyFavoritesChanged()
-        return .result(dialog: liked ? "已收藏《\(snap.title)》" : "已取消收藏《\(snap.title)》")
+        let dialog: IntentDialog = liked
+            ? IntentDialog("已收藏《\(snap.title)》")
+            : IntentDialog("已取消收藏《\(snap.title)》")
+        return .result(dialog: dialog)
     }
 }
 
