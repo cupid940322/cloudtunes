@@ -14,7 +14,7 @@ import WidgetKit
 ///   App 把「当前曲目 ID + 收藏集合」镜像进 App Group
 ///   → 小组件读镜像渲染心形（实心 = 已收藏）
 ///   → 点按后小组件进程切换收藏、重绘时间线
-///   → 发 Darwin 通知，正在运行的 App 立刻重读镜像，界面上的小心脏也同步
+///   → 往 App Group 写 ping 文件，正在运行的 App 立刻重读镜像，界面上的小心脏也同步
 @available(iOSApplicationExtension 17.0, *)
 struct ToggleFavoriteIntent: AppIntent {
     static var title: LocalizedStringResource = "收藏当前歌曲"
