@@ -36,6 +36,11 @@ final class LibraryStore: ObservableObject {
         storageURL = dir.appendingPathComponent("libraries.json")
         load()
         loadPrefs()
+        // 锁屏心形小组件在扩展进程里改了收藏 → 立刻跟着刷新内存里的集合
+        WidgetBridge.observeFavoritesChanged { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in self.reloadFavoritesFromBridge() }
+        }
     }
 
     // MARK: - 持久化
@@ -73,6 +78,13 @@ final class LibraryStore: ObservableObject {
         if let favs = defaults.array(forKey: favoritesKey) as? [String] {
             favoriteIDs = Set(favs)
         }
+        // 收藏以 App Group 镜像为准：锁屏心形小组件可能在 App 没跑的时候改过。
+        // 镜像还不存在（第一次装新版）就把本地这份种进去，保证两边从同一份数据出发。
+        if WidgetBridge.hasFavoritesMirror {
+            favoriteIDs = WidgetBridge.currentFavorites()
+        } else {
+            WidgetBridge.pushFavorites(favoriteIDs)
+        }
         if let recent = defaults.array(forKey: recentKey) as? [String] {
             recentIDs = recent
         }
@@ -90,6 +102,8 @@ final class LibraryStore: ObservableObject {
         if touch { localChangedAt = Date() }
         let defaults = UserDefaults.standard
         defaults.set(Array(favoriteIDs), forKey: favoritesKey)
+        // 同步一份进 App Group：锁屏心形小组件读这里
+        WidgetBridge.pushFavorites(favoriteIDs)
         defaults.set(recentIDs, forKey: recentKey)
         if let data = try? SyncService.encoder().encode(deletedLibraries) {
             defaults.set(data, forKey: deletedLibsKey)
@@ -394,9 +408,19 @@ final class LibraryStore: ObservableObject {
             favoriteIDs.insert(trackID)
         }
         savePrefs()
-        // 锁屏那颗心的填充状态跟着变（App 内点收藏 / 从锁屏点收藏都走这里）
-        PlayerManager.shared.syncLikeState()
+        // 锁屏心形小组件的实心/空心要跟着变
+        WidgetBridge.reload()
         SyncService.shared.scheduleSync(reason: "收藏变化")
+    }
+
+    /// 锁屏心形小组件改了收藏（Darwin 通知过来）→ 重读镜像并让界面跟上
+    private func reloadFavoritesFromBridge() {
+        guard WidgetBridge.hasFavoritesMirror else { return }
+        let bridged = WidgetBridge.currentFavorites()
+        guard bridged != favoriteIDs else { return }
+        favoriteIDs = bridged
+        savePrefs(touch: false)
+        SyncService.shared.scheduleSync(reason: "锁屏收藏")
     }
 
     func markPlayed(_ trackID: String) {

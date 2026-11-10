@@ -211,32 +211,8 @@ final class PlayerManager: NSObject, ObservableObject {
             guard let self, let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self.seek(to: e.positionTime); return .success
         }
-
-        // 锁屏 / 控制中心的收藏按钮。
-        // 图标长什么样是系统画的，App 唯一能给的是文字（localizedTitle）——
-        // 一旦设了文字，新系统会把它渲染成一个「收藏」文字按钮，心形就没了。
-        // 所以这里**不给标题**，让系统走 likeCommand 的默认呈现（心形图标）。
-        // 心是空心还是实心由 isActive 决定 —— 换歌与收藏变化时都要 syncLikeState()。
-        let like = center.likeCommand
-        like.isEnabled = true
-        like.addTarget { [weak self] _ in
-            guard let self, let track = self.currentTrack else { return .noSuchContent }
-            let id = track.id
-            // 反馈命令的回调不保证在主线程，切回主线程再动 LibraryStore
-            Task { @MainActor in
-                LibraryStore.shared.toggleFavorite(id)
-                self.syncLikeState()
-            }
-            return .success
-        }
-    }
-
-    /// 把「当前这首是否已收藏」同步到锁屏那颗心上（实心 = 已收藏）。
-    /// 换歌、App 内点收藏、从锁屏点收藏之后都会调一次。
-    @MainActor
-    func syncLikeState() {
-        let liked = currentTrack.map { LibraryStore.shared.isFavorite($0.id) } ?? false
-        MPRemoteCommandCenter.shared().likeCommand.isActive = liked
+        // 说明：likeCommand 在系统锁屏播放器里的图形是五角星且不可更换，
+        // 所以不再注册它，收藏走锁屏上的心形小组件（FavoriteWidget）。
     }
 
     /// 外部（设置里的开关）要求立刻刷新锁屏显示
@@ -434,7 +410,8 @@ final class PlayerManager: NSObject, ObservableObject {
             duration: duration,
             index: currentIndex + 1,
             total: queue.count,
-            updatedAt: Date()
+            updatedAt: Date(),
+            trackID: track.id
         )
         WidgetBridge.save(snapshot, cover: cover, replaceCover: replaceCover)
         WidgetBridge.reload()
@@ -543,8 +520,6 @@ final class PlayerManager: NSObject, ObservableObject {
         pendingSeek = 0
         let track = queue[index]
         nowPlayingTitle = track.title
-        // 换歌了，锁屏那颗心要跟着这首的收藏状态走
-        Task { @MainActor [weak self] in self?.syncLikeState() }
         currentTime = 0
         duration = 0
         npArtworkKey = nil

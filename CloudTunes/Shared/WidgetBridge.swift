@@ -17,6 +17,39 @@ enum WidgetBridge {
         var index: Int
         var total: Int
         var updatedAt: Date
+        /// 当前曲目 ID：锁屏心形小组件靠它知道该收藏哪首歌。
+        /// 旧版本写入的快照没有这个字段，容错解码成空串。
+        var trackID: String = ""
+
+        private enum CodingKeys: String, CodingKey {
+            case title, artist, isPlaying, position, duration, index, total, updatedAt, trackID
+        }
+
+        init(title: String, artist: String, isPlaying: Bool, position: TimeInterval,
+             duration: TimeInterval, index: Int, total: Int, updatedAt: Date, trackID: String = "") {
+            self.title = title
+            self.artist = artist
+            self.isPlaying = isPlaying
+            self.position = position
+            self.duration = duration
+            self.index = index
+            self.total = total
+            self.updatedAt = updatedAt
+            self.trackID = trackID
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try c.decode(String.self, forKey: .title)
+            artist = try c.decode(String.self, forKey: .artist)
+            isPlaying = try c.decode(Bool.self, forKey: .isPlaying)
+            position = try c.decode(TimeInterval.self, forKey: .position)
+            duration = try c.decode(TimeInterval.self, forKey: .duration)
+            index = try c.decode(Int.self, forKey: .index)
+            total = try c.decode(Int.self, forKey: .total)
+            updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+            trackID = try c.decodeIfPresent(String.self, forKey: .trackID) ?? ""
+        }
     }
 
     private static var defaults: UserDefaults? {
@@ -61,5 +94,62 @@ enum WidgetBridge {
 
     static func reload() {
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: - 收藏桥（锁屏心形小组件 ↔ App）
+
+    /// 收藏在 App Group 里放一份镜像：
+    /// 心形小组件运行在扩展进程里，读不到 App 的 UserDefaults.standard，
+    /// 双方都以这份镜像为准，谁改了另一方跟着走。
+    private static let favoritesKey = "bridge.favorites"
+    /// Darwin 通知名：小组件改完收藏后喊一嗓子，正在运行的 App 立刻跟着刷新
+    static let favoritesChangedNotification = "cloudtunes.favorites.changed"
+
+    static var hasFavoritesMirror: Bool {
+        defaults?.object(forKey: favoritesKey) != nil
+    }
+
+    static func pushFavorites(_ ids: Set<String>) {
+        defaults?.set(Array(ids), forKey: favoritesKey)
+    }
+
+    static func currentFavorites() -> Set<String> {
+        Set(defaults?.stringArray(forKey: favoritesKey) ?? [])
+    }
+
+    /// 小组件端调用：切换一首歌的收藏，返回切换后的状态
+    @discardableResult
+    static func toggleFavorite(trackID: String) -> Bool {
+        var favs = currentFavorites()
+        if favs.contains(trackID) {
+            favs.remove(trackID)
+        } else {
+            favs.insert(trackID)
+        }
+        pushFavorites(favs)
+        return favs.contains(trackID)
+    }
+
+    static func notifyFavoritesChanged() {
+        let center = CFNotificationCenterGetDarwinNotificationCenter()
+        CFNotificationCenterPostNotification(
+            center, CFNotificationName(favoritesChangedNotification as CFString), nil, nil, true)
+    }
+
+    /// App 端注册一次：小组件那边改了收藏，这边收到后立刻重读镜像。
+    /// Darwin 通知不带数据、也不排队，正好适合「喊一嗓子」这种场景。
+    static func observeFavoritesChanged(_ block: @escaping () -> Void) {
+        final class Box { let block: () -> Void
+            init(_ b: @escaping () -> Void) { block = b } }
+        let center = CFNotificationCenterGetDarwinNotificationCenter()
+        let observer = Unmanaged.passRetained(Box(block)).toOpaque()
+        CFNotificationCenterAddObserver(
+            center, observer,
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let box = Unmanaged<Box>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { box.block() }
+            },
+            favoritesChangedNotification as CFString, nil, .deliverImmediately)
     }
 }
