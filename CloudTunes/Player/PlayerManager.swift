@@ -212,13 +212,13 @@ final class PlayerManager: NSObject, ObservableObject {
             self.seek(to: e.positionTime); return .success
         }
 
-        // 锁屏 / 控制中心的「收藏」心形按钮。
-        // 系统只在 App 注册了反馈命令（likeCommand）之后才会画这颗心，
+        // 锁屏 / 控制中心的收藏按钮。
+        // 图标长什么样是系统画的，App 唯一能给的是文字（localizedTitle）——
+        // 一旦设了文字，新系统会把它渲染成一个「收藏」文字按钮，心形就没了。
+        // 所以这里**不给标题**，让系统走 likeCommand 的默认呈现（心形图标）。
         // 心是空心还是实心由 isActive 决定 —— 换歌与收藏变化时都要 syncLikeState()。
         let like = center.likeCommand
         like.isEnabled = true
-        like.localizedTitle = "收藏"
-        like.localizedShortTitle = "收藏"
         like.addTarget { [weak self] _ in
             guard let self, let track = self.currentTrack else { return .noSuchContent }
             let id = track.id
