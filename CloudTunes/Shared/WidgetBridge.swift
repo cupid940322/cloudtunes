@@ -1,4 +1,3 @@
-import CoreFoundation
 import Foundation
 import UIKit
 import WidgetKit
@@ -103,8 +102,6 @@ enum WidgetBridge {
     /// 心形小组件运行在扩展进程里，读不到 App 的 UserDefaults.standard，
     /// 双方都以这份镜像为准，谁改了另一方跟着走。
     private static let favoritesKey = "bridge.favorites"
-    /// Darwin 通知名：小组件改完收藏后喊一嗓子，正在运行的 App 立刻跟着刷新
-    static let favoritesChangedNotification = "cloudtunes.favorites.changed"
 
     static var hasFavoritesMirror: Bool {
         defaults?.object(forKey: favoritesKey) != nil
@@ -131,26 +128,27 @@ enum WidgetBridge {
         return favs.contains(trackID)
     }
 
+    /// 小组件改完收藏后「喊一嗓子」：往 App Group 容器里写一个 ping 文件。
+    ///
+    /// 为什么不用 Darwin 通知：`CFNotificationCenterGetDarwinNotificationCenter`
+    /// 在 iOS 的 Swift 里不导出（ObjC 才能用）。改用文件系统通知——
+    /// App 端用 DispatchSource 盯着这个文件，内容一变就知道收藏被小组件改了。
+    /// 注意这里**不能**用 atomic 写（会换 inode，App 盯着的还是旧文件），
+    /// 必须复用同一个文件 truncate + write。
     static func notifyFavoritesChanged() {
-        let center = CFNotificationCenterGetDarwinNotificationCenter()
-        CFNotificationCenterPostNotification(
-            center, CFNotificationName(favoritesChangedNotification as CFString), nil, nil, true)
+        guard let url = favoritesPingURL else { return }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        guard let fh = try? FileHandle(forWritingTo: url) else { return }
+        let stamp = Data("\(Date().timeIntervalSince1970)".utf8)
+        try? fh.truncate(atOffset: 0)
+        try? fh.write(contentsOf: stamp)
+        try? fh.close()
     }
 
-    /// App 端注册一次：小组件那边改了收藏，这边收到后立刻重读镜像。
-    /// Darwin 通知不带数据、也不排队，正好适合「喊一嗓子」这种场景。
-    static func observeFavoritesChanged(_ block: @escaping () -> Void) {
-        final class Box { let block: () -> Void
-            init(_ b: @escaping () -> Void) { block = b } }
-        let center = CFNotificationCenterGetDarwinNotificationCenter()
-        let observer = Unmanaged.passRetained(Box(block)).toOpaque()
-        CFNotificationCenterAddObserver(
-            center, observer,
-            { _, observer, _, _, _ in
-                guard let observer else { return }
-                let box = Unmanaged<Box>.fromOpaque(observer).takeUnretainedValue()
-                DispatchQueue.main.async { box.block() }
-            },
-            favoritesChangedNotification as CFString, nil, .deliverImmediately)
+    static var favoritesPingURL: URL? {
+        containerURL?.appendingPathComponent("favorites.ping")
     }
 }
