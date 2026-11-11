@@ -269,6 +269,12 @@ final class PlayerManager: NSObject, ObservableObject {
             if let album = track.album, !album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = album }
         }
         if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
+        else if let meta = track.duration, meta > 0 {
+            // 流媒体偶尔解析不出总时长（服务器不支持 Range / 个别封装格式），
+            // 这时退回刮削元数据里存的时长——否则锁屏剩余时间会显示「-0:00」、
+            // 进度条画满。元数据时长来自网易云，误差一般不到一秒。
+            info[MPMediaItemPropertyPlaybackDuration] = meta
+        }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         // 封面只在换歌时读一次盘
@@ -450,12 +456,19 @@ final class PlayerManager: NSObject, ObservableObject {
             // 只写时钟：PlayerManager 本身不再发通知，列表 / 首页因此不会每秒重建 4 次
             self.currentTime = time.seconds
 
-            // 时长只在还没解析出来时去问一次 AVPlayerItem，解析好之后就不再碰
+            // 时长只在还没解析出来时去问一次 AVPlayerItem，解析好之后就不再碰。
+            // 流媒体解析不出（NaN / 0）就退回刮削元数据里的时长，
+            // 否则播放页和锁屏全程都没有总时长可参照。
             if self.duration <= 0, let item = self.player.currentItem {
                 let d = item.duration.seconds
                 if d.isFinite, d > 0 {
                     self.duration = (d * 100).rounded() / 100
                     // 时长刚解析出来（之前是 0），立刻刷锁屏，否则锁屏没有总时长
+                    self.updateNowPlaying()
+                    return
+                }
+                if let meta = self.currentTrack?.duration, meta > 0 {
+                    self.duration = meta
                     self.updateNowPlaying()
                     return
                 }
