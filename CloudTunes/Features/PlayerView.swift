@@ -24,33 +24,11 @@ struct PlayerView: View {
         GeometryReader { geo in
             ZStack {
                 background
-                VStack(spacing: 0) {
-                    topBar
-                    if !player.playNote.isEmpty {
-                        playNoteBanner
-                    }
-                    if route.isAirPlay, !hideAirPlayHint {
-                        airPlayHint
-                    }
-                    Spacer(minLength: 8)
-                    // 封面 ↔ 歌词：左右滑动切换（第 0 页封面，第 1 页歌词）
-                    TabView(selection: $showLyrics) {
-                        coverPanel(side: min(geo.size.width - 76, 330))
-                            .tag(false)
-                        lyricPanel
-                            .tag(true)
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(maxHeight: .infinity)
-                    Spacer(minLength: 8)
-                    titleRow
-                    PlayerProgressSection()
-                    controlRow
-                    bottomBar
+                if geo.size.width >= Adaptive.widePlayerThreshold {
+                    wideLayout(geo: geo)
+                } else {
+                    compactLayout(geo: geo)
                 }
-                .padding(.horizontal, 26)
-                .padding(.top, 4)
-                .padding(.bottom, 18)
             }
         }
         .preferredColorScheme(.dark)
@@ -65,6 +43,73 @@ struct PlayerView: View {
                 EditTrackSheet(libraryID: ref.library.id, track: ref.track)
             }
         }
+    }
+
+    // MARK: - 两种版式
+
+    /// 竖屏 / iPhone：封面与歌词左右滑动切换，控件上下堆叠
+    private func compactLayout(geo: GeometryProxy) -> some View {
+        VStack(spacing: 0) {
+            topBar
+            if !player.playNote.isEmpty {
+                playNoteBanner
+            }
+            if route.isAirPlay, !hideAirPlayHint {
+                airPlayHint
+            }
+            Spacer(minLength: 8)
+            // 封面 ↔ 歌词：左右滑动切换（第 0 页封面，第 1 页歌词）
+            TabView(selection: $showLyrics) {
+                coverPanel(side: min(geo.size.width - 76, 330))
+                    .tag(false)
+                lyricPanel
+                    .tag(true)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(maxHeight: .infinity)
+            Spacer(minLength: 8)
+            titleRow
+            PlayerProgressSection()
+            controlRow
+            bottomBar
+        }
+        .padding(.horizontal, 26)
+        .padding(.top, 4)
+        .padding(.bottom, 18)
+    }
+
+    /// 横屏 / iPad：左边封面、右边歌词与控件，一屏同时看得见，宽度还留有余量
+    private func wideLayout(geo: GeometryProxy) -> some View {
+        let side = min(geo.size.height * 0.52, geo.size.width * 0.34, 460)
+        return VStack(spacing: 0) {
+            topBar
+            if !player.playNote.isEmpty {
+                playNoteBanner
+            }
+            if route.isAirPlay, !hideAirPlayHint {
+                airPlayHint
+            }
+            HStack(alignment: .center, spacing: 40) {
+                coverPanel(side: side)
+                VStack(spacing: 0) {
+                    lyricPanel
+                        .frame(maxHeight: 300)
+                    Spacer(minLength: 12)
+                    titleRow
+                    PlayerProgressSection()
+                    controlRow
+                }
+                .frame(maxWidth: 520)
+            }
+            .frame(maxWidth: 1120)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            Spacer(minLength: 0)
+            bottomBar
+        }
+        .padding(.horizontal, 36)
+        .padding(.top, 4)
+        .padding(.bottom, 18)
     }
 
     // MARK: 背景

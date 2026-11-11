@@ -44,6 +44,13 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # iPad 要支持全部四个方向（含倒置）才允许分屏 / Slide Over / 台前调度，
+        # 只声明三个方向的话 iPad 上只能全屏单窗口用。
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         CFBundleURLTypes:
           - CFBundleURLName: com.gysbs.cloudtunes
             CFBundleURLSchemes:

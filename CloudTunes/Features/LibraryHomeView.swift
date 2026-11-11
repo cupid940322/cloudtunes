@@ -638,8 +638,12 @@ struct LibraryDetailView: View {
 
     private func albumGrid(_ lib: MusicLibrary) -> some View {
         let albums = lib.albums()
-        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
-                         spacing: 18) {
+        // 列数按可用宽度自动算：iPhone 两列，iPad 竖屏三到四列、横屏五列以上。
+        // 封面大小由 GeometryReader 按列宽撑开，不会因为列数变化而变形。
+        let columns = [GridItem(.adaptive(minimum: Adaptive.albumColumnMin,
+                                          maximum: Adaptive.albumColumnMax),
+                                spacing: 14)]
+        return LazyVGrid(columns: columns, spacing: 18) {
             ForEach(albums) { album in
                 NavigationLink {
                     AlbumDetailView(libraryID: libraryID, albumID: album.id)

@@ -46,28 +46,58 @@ final class AppUIState: ObservableObject {
     @Published var showPlayer = false
 }
 
+/// iPad 侧栏条目。分栏模式下左栏列这些，右栏显示对应内容。
+enum SidebarItem: Hashable, CaseIterable, Identifiable {
+    case home, search, favorites, recent, profile
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .home: return "音乐库"
+        case .search: return "搜索"
+        case .favorites: return "我喜欢的音乐"
+        case .recent: return "最近播放"
+        case .profile: return "我的"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .home: return "music.note.house.fill"
+        case .search: return "magnifyingglass"
+        case .favorites: return "heart.fill"
+        case .recent: return "clock.fill"
+        case .profile: return "person.crop.circle.fill"
+        }
+    }
+
+    static let groups: [(title: String, items: [SidebarItem])] = [
+        ("浏览", [.home, .search]),
+        ("资料库", [.favorites, .recent]),
+        ("设置", [.profile]),
+    ]
+}
+
 struct RootView: View {
     @ObservedObject private var ui = AppUIState.shared
     @State private var tab: AppTab = .home
+    @State private var sidebar: SidebarItem? = .home
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    /// iPad + 常规宽度（未分屏成窄窗口）→ 用分栏布局
+    private var usesSplitLayout: Bool {
+        Adaptive.isPad && sizeClass == .regular
+    }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Theme.background.ignoresSafeArea()
-
-            ZStack {
-                HomeTabView()
-                    .opacity(tab == .home ? 1 : 0)
-                    .allowsHitTesting(tab == .home)
-                SearchView()
-                    .opacity(tab == .search ? 1 : 0)
-                    .allowsHitTesting(tab == .search)
-                ProfileView()
-                    .opacity(tab == .profile ? 1 : 0)
-                    .allowsHitTesting(tab == .profile)
+        Group {
+            if usesSplitLayout {
+                splitLayout
+            } else {
+                phoneLayout
             }
-
-            PlayerDock(selection: $tab)
         }
         .fullScreenCover(isPresented: $ui.showPlayer) {
             PlayerView()
@@ -86,12 +116,87 @@ struct RootView: View {
         }
         .tint(Theme.accent)
     }
+
+    // MARK: - 手机形态（原来的悬浮标签栏）
+
+    private var phoneLayout: some View {
+        ZStack(alignment: .bottom) {
+            Theme.background.ignoresSafeArea()
+
+            tabContent
+                .readableWidth()
+
+            PlayerDock(selection: $tab)
+        }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        ZStack {
+            HomeTabView()
+                .opacity(tab == .home ? 1 : 0)
+                .allowsHitTesting(tab == .home)
+            SearchView()
+                .opacity(tab == .search ? 1 : 0)
+                .allowsHitTesting(tab == .search)
+            ProfileView()
+                .opacity(tab == .profile ? 1 : 0)
+                .allowsHitTesting(tab == .profile)
+        }
+    }
+
+    // MARK: - iPad 形态（侧栏 + 内容区，底部只留迷你播放条）
+
+    private var splitLayout: some View {
+        NavigationSplitView {
+            List(selection: $sidebar) {
+                ForEach(SidebarItem.groups, id: \.title) { group in
+                    Section(header: Text(group.title)) {
+                        ForEach(group.items) { item in
+                            Label(item.title, systemImage: item.icon)
+                                .tag(Optional(item))
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("汤圆云音盒")
+        } detail: {
+            ZStack(alignment: .bottom) {
+                Theme.background.ignoresSafeArea()
+
+                detailContent
+                    .readableWidth()
+
+                PlayerDock(selection: $tab, showsTabBar: false)
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        switch sidebar ?? .home {
+        case .home:
+            HomeTabView()
+        case .search:
+            SearchView()
+        case .favorites:
+            NavigationStack { FavoritesView() }
+        case .recent:
+            NavigationStack { RecentTracksView() }
+        case .profile:
+            ProfileView()
+        }
+    }
 }
 
 /// 底部「迷你播放条 + 标签栏」。
 /// 单独拆出来，只让它观察 PlayerManager：换歌、暂停时不会把上面三个 Tab 的整棵视图树一起重建。
 struct PlayerDock: View {
     @Binding var selection: AppTab
+    /// iPad 分栏模式下用侧栏导航，就不再画悬浮标签栏，只留迷你播放条
+    var showsTabBar: Bool = true
 
     @ObservedObject private var player = PlayerManager.shared
     @ObservedObject private var ui = AppUIState.shared
@@ -102,8 +207,11 @@ struct PlayerDock: View {
                 MiniPlayerBar { ui.showPlayer = true }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            CustomTabBar(selection: $selection)
+            if showsTabBar {
+                CustomTabBar(selection: $selection)
+            }
         }
+        .readableWidth(600)
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 6)
