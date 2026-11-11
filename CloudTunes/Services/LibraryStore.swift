@@ -36,31 +36,6 @@ final class LibraryStore: ObservableObject {
         storageURL = dir.appendingPathComponent("libraries.json")
         load()
         loadPrefs()
-        // 锁屏心形小组件在扩展进程里改了收藏（往 App Group 的 ping 文件写了一下）
-        // → 立刻跟着刷新内存里的集合，App 内界面的心形也不会错位
-        watchFavoritesPing()
-    }
-
-    /// 盯住 App Group 里的 favorites.ping 文件（小组件改收藏时会写它）。
-    /// 用 DispatchSource 文件事件做跨进程通知：纯公开 API，App 挂起时错过的事件
-    /// 由「回到前台再刷一次」兜底。
-    private var favoritesWatch: DispatchSourceFileSystemObject?
-
-    private func watchFavoritesPing() {
-        guard let url = WidgetBridge.favoritesPingURL else { return }
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
-        let fd = open(url.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
-        src.setEventHandler { [weak self] in
-            guard let self else { return }
-            Task { @MainActor in self.reloadFavoritesFromBridge() }
-        }
-        src.setCancelHandler { close(fd) }
-        src.resume()
-        favoritesWatch = src
     }
 
     // MARK: - 持久化
@@ -98,13 +73,6 @@ final class LibraryStore: ObservableObject {
         if let favs = defaults.array(forKey: favoritesKey) as? [String] {
             favoriteIDs = Set(favs)
         }
-        // 收藏以 App Group 镜像为准：锁屏心形小组件可能在 App 没跑的时候改过。
-        // 镜像还不存在（第一次装新版）就把本地这份种进去，保证两边从同一份数据出发。
-        if WidgetBridge.hasFavoritesMirror {
-            favoriteIDs = WidgetBridge.currentFavorites()
-        } else {
-            WidgetBridge.pushFavorites(favoriteIDs)
-        }
         if let recent = defaults.array(forKey: recentKey) as? [String] {
             recentIDs = recent
         }
@@ -122,8 +90,6 @@ final class LibraryStore: ObservableObject {
         if touch { localChangedAt = Date() }
         let defaults = UserDefaults.standard
         defaults.set(Array(favoriteIDs), forKey: favoritesKey)
-        // 同步一份进 App Group：锁屏心形小组件读这里
-        WidgetBridge.pushFavorites(favoriteIDs)
         defaults.set(recentIDs, forKey: recentKey)
         if let data = try? SyncService.encoder().encode(deletedLibraries) {
             defaults.set(data, forKey: deletedLibsKey)
@@ -428,19 +394,7 @@ final class LibraryStore: ObservableObject {
             favoriteIDs.insert(trackID)
         }
         savePrefs()
-        // 锁屏心形小组件的实心/空心要跟着变
-        WidgetBridge.reload()
         SyncService.shared.scheduleSync(reason: "收藏变化")
-    }
-
-    /// 锁屏心形小组件改了收藏（ping 文件被写 / 回到前台）→ 重读镜像并让界面跟上
-    func reloadFavoritesFromBridge() {
-        guard WidgetBridge.hasFavoritesMirror else { return }
-        let bridged = WidgetBridge.currentFavorites()
-        guard bridged != favoriteIDs else { return }
-        favoriteIDs = bridged
-        savePrefs(touch: false)
-        SyncService.shared.scheduleSync(reason: "锁屏收藏")
     }
 
     func markPlayed(_ trackID: String) {

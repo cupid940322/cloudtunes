@@ -82,8 +82,6 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { phase in
             guard phase == .active else { return }
-            // 锁屏小组件改了收藏而 App 挂起错过通知时，回前台补一次
-            LibraryStore.shared.reloadFavoritesFromBridge()
             Task { await SyncService.shared.syncIfStale() }
         }
         .tint(Theme.accent)

@@ -211,8 +211,30 @@ final class PlayerManager: NSObject, ObservableObject {
             guard let self, let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self.seek(to: e.positionTime); return .success
         }
-        // 说明：likeCommand 在系统锁屏播放器里的图形是五角星且不可更换，
-        // 所以不再注册它，收藏走锁屏上的心形小组件（FavoriteWidget）。
+
+        // 锁屏 / 控制中心的收藏按钮（系统画的五角星，空心 = 未收藏）。
+        // 图标由系统决定且不可更换——试过锁屏小组件方案后按用户要求改回这里。
+        // 不设 localizedTitle：设了文字部分系统会渲染成文字按钮，星形就没了。
+        let like = center.likeCommand
+        like.isEnabled = true
+        like.addTarget { [weak self] _ in
+            guard let self, let track = self.currentTrack else { return .noSuchContent }
+            let id = track.id
+            // 反馈命令的回调不保证在主线程，切回主线程再动 LibraryStore
+            Task { @MainActor in
+                LibraryStore.shared.toggleFavorite(id)
+                self.syncLikeState()
+            }
+            return .success
+        }
+    }
+
+    /// 把「当前这首是否已收藏」同步到锁屏那颗星上（实心 = 已收藏）。
+    /// 换歌、App 内点收藏、从锁屏点收藏之后都会调一次。
+    @MainActor
+    func syncLikeState() {
+        let liked = currentTrack.map { LibraryStore.shared.isFavorite($0.id) } ?? false
+        MPRemoteCommandCenter.shared().likeCommand.isActive = liked
     }
 
     /// 外部（设置里的开关）要求立刻刷新锁屏显示
@@ -520,6 +542,8 @@ final class PlayerManager: NSObject, ObservableObject {
         pendingSeek = 0
         let track = queue[index]
         nowPlayingTitle = track.title
+        // 换歌了，锁屏那颗星要跟着这首的收藏状态走
+        Task { @MainActor [weak self] in self?.syncLikeState() }
         currentTime = 0
         duration = 0
         npArtworkKey = nil
