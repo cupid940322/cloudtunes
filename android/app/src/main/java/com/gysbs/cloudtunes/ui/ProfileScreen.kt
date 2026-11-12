@@ -350,14 +350,3 @@ private const val TOKEN_URL =
 /// 已有令牌管理页：查看列表 / 重新生成 / 删除
 private const val TOKEN_LIST_URL =
     "https://github.com/settings/tokens"
-
-/// 用系统浏览器打开链接；TV 等没有浏览器的设备返回 false
-private fun openUrl(context: android.content.Context, url: String): Boolean = try {
-    context.startActivity(
-        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
-            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-    )
-    true
-} catch (e: Exception) {
-    false
-}
