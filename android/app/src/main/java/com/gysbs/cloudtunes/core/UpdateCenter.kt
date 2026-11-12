@@ -72,7 +72,8 @@ object UpdateCenter {
 
         val releases = fetchReleases()
         if (releases == null) {
-            state.value = State.Failed("检查更新失败：无法连接 GitHub（可稍后再试）")
+            // 静默检查失败不出声，手动检查才提示
+            state.value = if (force) State.Failed("检查更新失败：无法连接 GitHub（可稍后再试）") else State.Idle
             return null
         }
         p.edit().putLong("lastCheck", System.currentTimeMillis()).apply()
@@ -99,7 +100,7 @@ object UpdateCenter {
         }
 
         val candidate = best ?: run {
-            state.value = State.Failed("没有找到可用的安装包")
+            state.value = if (force) State.Failed("没有找到可用的安装包") else State.Idle
             return null
         }
         val (code, rel, asset) = candidate
