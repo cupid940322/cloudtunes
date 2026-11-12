@@ -5,8 +5,6 @@ import android.os.Build
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateSetOf
-import androidx.compose.runtime.snapshots.SnapshotStateSet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -20,7 +18,7 @@ object LibraryStore {
     private lateinit var appContext: Context
 
     val libraries = mutableStateListOf<MusicLibrary>()
-    val favorites = mutableStateSetOf<String>()
+    val favorites = mutableStateListOf<String>()
     val recent = mutableStateListOf<String>()
     /// 收藏的库 ID（本地偏好，不同步）等
     val deletedLibraries = mutableStateMapOf<String, Instant>()
@@ -38,30 +36,32 @@ object LibraryStore {
 
     // ── 持久化 ──
 
-    private fun load() = try {
-        val f = java.io.File(filesDir, "library.json")
-        if (f.exists()) {
-            val data = gistJson.decodeFromString<PersistedLibrary>(f.readText())
-            libraries.clear()
-            libraries.addAll(data.libraries)
-            favorites.clear()
-            favorites.addAll(data.favorites)
-            recent.clear()
-            recent.addAll(data.recent)
-            deletedLibraries.clear()
-            data.deletedLibraries.forEach { (k, v) -> deletedLibraries[k] = v }
-            deletedTracks.clear()
-            data.deletedTracks.forEach { (k, v) -> deletedTracks[k] = v.toMutableMap() }
+    private fun load() {
+        try {
+            val f = java.io.File(filesDir, "library.json")
+            if (f.exists()) {
+                val data = gistJson.decodeFromString<PersistedLibrary>(f.readText())
+                libraries.clear()
+                libraries.addAll(data.libraries)
+                favorites.clear()
+                favorites.addAll(data.favorites)
+                recent.clear()
+                recent.addAll(data.recent)
+                deletedLibraries.clear()
+                data.deletedLibraries.forEach { (k, v) -> deletedLibraries[k] = v }
+                deletedTracks.clear()
+                data.deletedTracks.forEach { (k, v) -> deletedTracks[k] = v.toMutableMap() }
+            }
+            val sf = java.io.File(filesDir, "playback-session.json")
+            if (sf.exists()) {
+                session.value = try {
+                    gistJson.decodeFromString<PlaybackSession>(sf.readText())
+                        .takeIf { it.tracks.isNotEmpty() && it.index < it.tracks.size }
+                } catch (e: Exception) { null }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("LibraryStore", "load failed", e)
         }
-        val sf = java.io.File(filesDir, "playback-session.json")
-        if (sf.exists()) {
-            session.value = try {
-                gistJson.decodeFromString<PlaybackSession>(sf.readText())
-                    .takeIf { it.tracks.isNotEmpty() && it.index < it.tracks.size }
-            } catch (e: Exception) { null }
-        }
-    } catch (e: Exception) {
-        android.util.Log.e("LibraryStore", "load failed", e)
     }
 
     @Serializable
@@ -88,13 +88,15 @@ object LibraryStore {
     }
 
     @Synchronized
-    fun persistSession() = try {
-        val s = session.value ?: return
-        val valid = s.tracks.isNotEmpty() && s.index < s.tracks.size
-        val f = java.io.File(filesDir, "playback-session.json")
-        if (valid) f.writeText(gistJson.encodeToString(s)) else f.delete()
-    } catch (e: Exception) {
-        android.util.Log.e("LibraryStore", "persistSession failed", e)
+    fun persistSession() {
+        try {
+            val s = session.value ?: return
+            val valid = s.tracks.isNotEmpty() && s.index < s.tracks.size
+            val f = java.io.File(filesDir, "playback-session.json")
+            if (valid) f.writeText(gistJson.encodeToString(s)) else f.delete()
+        } catch (e: Exception) {
+            android.util.Log.e("LibraryStore", "persistSession failed", e)
+        }
     }
 
     // ── 查询 ──
@@ -327,7 +329,9 @@ object LibraryStore {
         val idx = lib.tracks.indexOfFirst { it.id == trackID }
         if (idx < 0) return false
         val t = lib.tracks[idx]
-        val m = candidate ?: Scraper.bestMatch(t.title, t.artist, t.folderPath?.firstOrNull()) ?: return false
+        val m = candidate?.let { Scraper.Match(it, 1.0) }
+            ?: Scraper.bestMatch(t.title, t.artist, t.folderPath?.firstOrNull())
+            ?: return false
         val updated = t.copy(
             title = m.info.title ?: t.title,
             artist = m.info.artist ?: t.artist,

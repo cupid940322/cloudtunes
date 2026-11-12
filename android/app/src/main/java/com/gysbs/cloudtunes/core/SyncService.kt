@@ -188,7 +188,7 @@ object SyncService {
             val tombstones = merged.deletedTracks[meta.id] ?: emptyMap()
 
             val tracks = mergeTracks(localLib?.tracks ?: emptyList(), remoteLib?.tracks ?: emptyList(), tombstones)
-            totalTracks += tracks.count
+            totalTracks += tracks.size
 
             val lib = MusicLibrary(
                 id = meta.id,

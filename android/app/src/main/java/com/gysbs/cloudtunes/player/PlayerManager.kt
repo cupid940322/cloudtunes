@@ -10,10 +10,11 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import android.net.Uri
 import com.gysbs.cloudtunes.core.BaiduProvider
 import com.gysbs.cloudtunes.core.CloudFile
 import com.gysbs.cloudtunes.core.CloudKind
@@ -64,7 +65,7 @@ object PlayerManager {
     var lyricLines = mutableStateOf<List<LyricLine>>(emptyList())
     var nowPlayingLineIndex = mutableIntStateOf(-1)
     var isLoading = mutableStateOf(false)
-    var currentTrack: Track?
+    val currentTrack: Track?
         get() = queue.getOrNull(currentIndex.value)
     var loadError = mutableStateOf<String?>(null)
 
@@ -221,7 +222,7 @@ object PlayerManager {
                 .setTitle(track.displayTitle)
                 .setArtist(track.displayArtist)
                 .setAlbumTitle(track.album)
-                .apply { artwork?.let { setArtworkUri(it) } }
+                .apply { artwork?.let { setArtworkUri(Uri.parse(it)) } }
                 .build()
             val item = MediaItem.Builder()
                 .setUri(url)

@@ -424,8 +424,8 @@ object BaiduProvider : CloudProvider {
 
     override val kind = CloudKind.BAIDU
 
-    private var appKey: String get() = CredentialStore.get("baidu.appKey") ?: ""
-    private var secretKey: String get() = CredentialStore.get("baidu.secretKey") ?: ""
+    private val appKey: String get() = CredentialStore.get("baidu.appKey") ?: ""
+    private val secretKey: String get() = CredentialStore.get("baidu.secretKey") ?: ""
     private var accessToken: String?
         get() = CredentialStore.get("baidu.accessToken")
         set(v) = CredentialStore.set(v, "baidu.accessToken")

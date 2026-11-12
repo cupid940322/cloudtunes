@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
@@ -395,7 +396,7 @@ fun SearchTab() {
             label = { Text("搜索歌曲 / 歌手 / 专辑") },
             modifier = Modifier.fillMaxWidth().padding(16.dp), singleLine = true)
         LazyColumn {
-            itemsIndexed(results, key = { _, (_, t) -> t.id }) { idx, (lib, t) ->
+            itemsIndexed(results, key = { _, r -> r.second.id }) { idx, (lib, t) ->
                 TrackRow(lib, t, results.map { it.second }, indexInQueue = idx)
             }
             if (query.isNotBlank() && results.isEmpty()) {
@@ -423,7 +424,7 @@ fun FavoritesTab() {
                 Modifier.padding(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             LazyColumn {
-                itemsIndexed(all, key = { _, (_, t) -> t.id }) { idx, (lib, t) ->
+                itemsIndexed(all, key = { _, r -> r.second.id }) { idx, (lib, t) ->
                     TrackRow(lib, t, all.map { it.second }, indexInQueue = idx)
                 }
             }

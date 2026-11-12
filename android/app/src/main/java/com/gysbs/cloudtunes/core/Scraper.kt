@@ -6,6 +6,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import org.json.JSONObject
+import kotlin.math.max
+import kotlin.math.min
 
 /// 文本相似度（对齐 iOS TextMatch：归一化 + 包含加分 + 二元组 Dice）
 object TextMatch {
@@ -21,7 +23,7 @@ object TextMatch {
         s = s.replace(Regex("[（(\\[【<][^）)\\]】>]*[）)\\]】>]"), " ")
         for (token in redundantTokens) s = s.replace(token, " ")
         s = s.filter { c ->
-            val t = Character.getType(c)
+            val t: Byte = Character.getType(c).toByte()
             t != Character.CONNECTOR_PUNCTUATION &&
                 t != Character.DASH_PUNCTUATION &&
                 t != Character.START_PUNCTUATION &&
