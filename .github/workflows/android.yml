@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -91,7 +93,16 @@ jobs:
           EOF
           git config user.email "ci-update@example.com"
           git config user.name "ci-update"
-          git add update/android-latest.json
-          git commit -qm "chore(update): android v1.0.${{ github.run_number }}" || exit 0
-          git pull --rebase -q origin main || true
-          git push -q origin main
+          git add -f update/android-latest.json
+          git commit -qm "chore(update): android v1.0.${{ github.run_number }}" || echo "清单内容无变化"
+          # iOS 流程也在往 main 推版本号，这里重试几次避免 push 被拒
+          for i in 1 2 3 4 5; do
+            git fetch -q origin main
+            git rebase -q origin/main >/dev/null 2>&1 || git rebase --abort >/dev/null 2>&1 || true
+            if git push -q origin HEAD:main; then
+              echo "更新清单已发布 v1.0.${{ github.run_number }}"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "更新清单推送失败（APK 已发布，App 仍可用 Releases API 兜底）"

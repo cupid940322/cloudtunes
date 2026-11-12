@@ -1,9 +1,9 @@
 {
-  "versionCode": 17,
-  "versionName": "1.0.17",
-  "tag": "app-android-17",
-  "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-17/cloudtunes-phone-debug.apk",
-  "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-17/cloudtunes-tv-debug.apk",
-  "notes": "CloudTunes 安卓版 v1.0.17",
-  "publishedAt": "2026-11-12T22:46:21+08:00"
+  "versionCode": 18,
+  "versionName": "1.0.18",
+  "tag": "app-android-18",
+  "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-18/cloudtunes-phone-debug.apk",
+  "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-18/cloudtunes-tv-debug.apk",
+  "notes": "CloudTunes 安卓版 v1.0.18：修复点击播放闪退（补 WAKE_LOCK 权限）；更新源支持光鸭云盘；新增崩溃日志",
+  "publishedAt": "2026-11-12T14:48:09Z"
 }
