@@ -78,7 +78,8 @@ class TVMainActivity : ComponentActivity() {
             startService(android.content.Intent(this, PlaybackService::class.java))
         } catch (t: Throwable) {
             com.gysbs.cloudtunes.core.CrashLog.record("TV 启动播放服务", t)
-        }        setContent { TVApp() }
+        }
+        setContent { TVApp() }
     }
 }
 
