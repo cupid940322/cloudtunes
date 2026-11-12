@@ -5,6 +5,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// CI 用 -PbuildNumber=<run_number> 注入；本地构建默认 1
+val buildNumber: Int = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
+
 android {
     namespace = "com.gysbs.cloudtunes.tv"
     compileSdk = 34
@@ -13,8 +16,8 @@ android {
         applicationId = "com.gysbs.cloudtunes.tv"
         minSdk = 24 // 安卓 7.0
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = buildNumber
+        versionName = "1.0.$buildNumber"
     }
 
     // 复用 phone 模块的全部共享源码（core / player / App / phone UI），TV 只额外提供自己的入口

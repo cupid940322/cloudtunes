@@ -32,7 +32,7 @@ jobs:
         working-directory: android
         run: |
           set -o pipefail
-          gradle assembleDebug --no-daemon 2>&1 | tee build_output.log
+          gradle assembleDebug -PbuildNumber=${{ github.run_number }} --no-daemon 2>&1 | tee build_output.log
 
       - name: Errors to summary
         if: failure()
@@ -57,10 +57,10 @@ jobs:
           tag_name: app-android-${{ github.run_number }}
           name: 安卓版 build ${{ github.run_number }}
           body: |
-            CloudTunes 安卓版 APK（调试签名，直接安装即可）。
+            CloudTunes 安卓版 v1.0.${{ github.run_number }}（调试签名，直接安装即可，App 内「我的 → 版本更新」可自检升级）。
             - cloudtunes-phone-debug.apk：手机版（Android 8+）
             - cloudtunes-tv-debug.apk：TV 版（Android 7+，TV 桌面可直接启动）
-            对应 iOS 端提交：${{ github.sha }}
+            对应提交：${{ github.sha }}
           files: |
             android/app/build/outputs/apk/debug/cloudtunes-phone-debug.apk
             android/tv/build/outputs/apk/debug/cloudtunes-tv-debug.apk

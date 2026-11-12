@@ -5,6 +5,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// CI 用 -PbuildNumber=<run_number> 注入；本地构建默认 1
+val buildNumber: Int = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
+
 android {
     namespace = "com.gysbs.cloudtunes"
     compileSdk = 34
@@ -13,8 +16,8 @@ android {
         applicationId = "com.gysbs.cloudtunes"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = buildNumber
+        versionName = "1.0.$buildNumber"
     }
 
     buildTypes {

@@ -31,10 +31,15 @@ fun AppRoot() {
     var tab by remember { mutableStateOf(Tab.Home) }
     var openLibraryID by remember { mutableStateOf<String?>(null) }
     var showPlayer by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     // 登录后冷启动同步
     LaunchedEffect(Unit) {
         SyncService.syncIfStale()
+    }
+    // 启动时静默检查更新（24 小时内只查一次，发现新版才弹窗）
+    LaunchedEffect(Unit) {
+        com.gysbs.cloudtunes.core.UpdateCenter.check(context, force = false)
     }
 
     val snackbar = remember { SnackbarHostState() }
@@ -74,6 +79,8 @@ fun AppRoot() {
             }
         }
     }
+
+    UpdateDialogs()
 }
 
 /// 迷你播放条

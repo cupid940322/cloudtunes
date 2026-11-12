@@ -26,6 +26,8 @@ fun ProfileTab() {
         Text("我的", style = MaterialTheme.typography.headlineMedium)
         SyncStatusLine()
 
+        UpdateCard()
+
         GitHubCard()
 
         ProviderCard(

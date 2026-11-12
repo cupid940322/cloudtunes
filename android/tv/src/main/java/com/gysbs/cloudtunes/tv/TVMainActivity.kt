@@ -103,6 +103,11 @@ fun TVApp() {
         var showPlayer by remember { mutableStateOf(false) }
 
         LaunchedEffect(Unit) { SyncService.syncIfStale() }
+        // 启动静默检查更新（24 小时内只查一次）
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        LaunchedEffect(Unit) {
+            com.gysbs.cloudtunes.core.UpdateCenter.check(ctx, force = false)
+        }
 
         BackHandler(enabled = showPlayer || openLibraryID != null) {
             if (showPlayer) showPlayer = false else openLibraryID = null
@@ -164,6 +169,8 @@ fun TVApp() {
                 PlayerDock(showPlayer = { showPlayer = true })
             }
         }
+
+        com.gysbs.cloudtunes.ui.UpdateDialogs()
     }
 }
 
