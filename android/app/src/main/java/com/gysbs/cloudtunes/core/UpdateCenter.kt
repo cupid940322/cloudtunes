@@ -22,6 +22,23 @@ object UpdateCenter {
     private const val TAG_PREFIX = "app-android-"
     private const val PROXY = "https://gh-proxy.com/"
 
+    // 更新清单（CI 每次发版提交到 main）：国内可达镜像按序尝试
+    private val MANIFEST_MIRRORS = listOf(
+        "https://gh-proxy.com/https://raw.githubusercontent.com/$REPO/main/update/android-latest.json",
+        "https://ghproxy.net/https://raw.githubusercontent.com/$REPO/main/update/android-latest.json",
+        "https://raw.githubusercontent.com/$REPO/main/update/android-latest.json",
+        "https://cdn.jsdelivr.net/gh/$REPO@main/update/android-latest.json",
+        "https://fastly.jsdelivr.net/gh/$REPO@main/update/android-latest.json",
+    )
+
+    /// 短超时客户端（多镜像快速切换）
+    private val fastClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(java.time.Duration.ofSeconds(8))
+            .readTimeout(java.time.Duration.ofSeconds(10))
+            .build()
+    }
+
     data class UpdateInfo(
         val versionCode: Int,
         val versionName: String,
@@ -70,6 +87,22 @@ object UpdateCenter {
         }
         state.value = State.Checking
 
+        // ① 首选：仓库里的更新清单（镜像多、国内可达，不依赖 Releases API）
+        val manifest = fetchManifest(isTv(context))
+        if (manifest != null) {
+            p.edit().putLong("lastCheck", System.currentTimeMillis()).apply()
+            val current = currentVersionCode(context)
+            return if (manifest.versionCode > current) {
+                state.value = State.Available(manifest)
+                manifest
+            } else {
+                // 启动静默检查时不弹「已是最新版本」
+                state.value = if (force) State.UpToDate else State.Idle
+                null
+            }
+        }
+
+        // ② 兜底：GitHub Releases API
         val releases = fetchReleases()
         if (releases == null) {
             // 静默检查失败不出声，手动检查才提示
@@ -124,6 +157,36 @@ object UpdateCenter {
             state.value = if (force) State.UpToDate else State.Idle
             null
         }
+    }
+
+    /// 拉取仓库更新清单（多镜像），返回 null 表示全部失败
+    private fun fetchManifest(isTv: Boolean): UpdateInfo? {
+        for (url in MANIFEST_MIRRORS) {
+            try {
+                val req = Request.Builder().url(url)
+                    .header("User-Agent", "CloudTunes-Android")
+                    .get().build()
+                fastClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use
+                    val text = resp.body?.string() ?: return@use
+                    val obj = JSONObject(text)
+                    val code = obj.optInt("versionCode", 0)
+                    if (code <= 0) return@use
+                    val apkUrl = (if (isTv) obj.optString("apkTv") else obj.optString("apkPhone"))
+                        .takeIf { it.isNotEmpty() } ?: return@use
+                    return UpdateInfo(
+                        versionCode = code,
+                        versionName = obj.optString("versionName").ifEmpty { "1.0.$code" },
+                        notes = obj.optString("notes").ifEmpty { "本次更新包含问题修复与体验优化。" },
+                        apkUrl = apkUrl,
+                        size = 0L,
+                    )
+                }
+            } catch (e: Exception) {
+                // 换下一个镜像
+            }
+        }
+        return null
     }
 
     private fun fetchReleases(): JSONArray? {

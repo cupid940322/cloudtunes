@@ -64,3 +64,24 @@ jobs:
           files: |
             android/app/build/outputs/apk/debug/cloudtunes-phone-debug.apk
             android/tv/build/outputs/apk/debug/cloudtunes-tv-debug.apk
+
+      - name: Publish update manifest
+        run: |
+          mkdir -p update
+          cat > update/android-latest.json <<EOF
+          {
+            "versionCode": ${{ github.run_number }},
+            "versionName": "1.0.${{ github.run_number }}",
+            "tag": "app-android-${{ github.run_number }}",
+            "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-${{ github.run_number }}/cloudtunes-phone-debug.apk",
+            "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-${{ github.run_number }}/cloudtunes-tv-debug.apk",
+            "notes": "CloudTunes 安卓版 v1.0.${{ github.run_number }}",
+            "publishedAt": "${{ github.event.head_commit.timestamp }}"
+          }
+          EOF
+          git config user.email "ci-update@example.com"
+          git config user.name "ci-update"
+          git add update/android-latest.json
+          git commit -qm "chore(update): android v1.0.${{ github.run_number }}" || exit 0
+          git pull --rebase -q origin main || true
+          git push -q origin main
