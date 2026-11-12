@@ -225,6 +225,30 @@ object GuangyaProvider : CloudProvider {
         if (url.isEmpty()) throw CloudError.parse("空下载直链")
         return url to emptyMap()
     }
+
+    /// 只取第一页（更新检查用）。根目录可能有几千个文件，全量翻页会被 500ms 限速拖到几十秒。
+    suspend fun listFirstPage(folderID: String, pageSize: Int = 100): List<CloudFile> = withContext(Dispatchers.IO) {
+        val r = apiPost(
+            "/userres/v1/file/get_file_list",
+            JSONObject()
+                .put("parentId", folderID)
+                .put("page", 0)
+                .put("pageSize", pageSize)
+                .put("orderBy", 3)
+                .put("sortType", 1),
+        )
+        val data = r.optJSONObject("data") ?: return@withContext emptyList()
+        val list = data.optJSONArray("list") ?: return@withContext emptyList()
+        (0 until list.length()).mapNotNull { i ->
+            val item = list.optJSONObject(i) ?: return@mapNotNull null
+            CloudFile(
+                id = item.optString("fileId"),
+                name = item.optString("fileName"),
+                size = item.optLong("fileSize"),
+                isFolder = item.optInt("resType") == 2,
+            )
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════

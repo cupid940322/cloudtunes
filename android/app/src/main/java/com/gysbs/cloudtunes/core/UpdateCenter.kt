@@ -216,7 +216,8 @@ object UpdateCenter {
         val wantTv = isTv(context)
         val files = mutableListOf<CloudFile>()
         try {
-            val root = GuangyaProvider.list("")
+            // 根目录只取第一页（可能有几千个文件）；命名文件夹里再全量找一遍
+            val root = GuangyaProvider.listFirstPage("", pageSize = 100)
             files += root.filter { !it.isFolder }
             for (dir in root.filter { it.isFolder && UPDATE_FOLDER_NAMES.contains(it.name.lowercase()) }) {
                 val inner = (try {
