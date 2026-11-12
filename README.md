@@ -117,3 +117,11 @@ Kotlin + Jetpack Compose + Media3，功能对齐 iOS 端：
 - CI：push 到 main 触发 `android.yml`，自动出 APK 发到 Releases（tag `app-android-*`），国内可用 gh-proxy 加速下载
 
 最低要求 Android 8.0（API 26），调试签名 APK，安装时需允许「未知来源应用」。
+
+## 安卓 TV 版
+
+- 独立应用 `云音 TV`（applicationId `com.gysbs.cloudtunes.tv`），**支持 Android 7.0+**
+- TV 桌面（Leanback）直接显示图标；遥控器焦点导航，聚焦放大高亮
+- 播放页为 TV 专用大屏布局：封面 + 歌词高亮、±10 秒快进退、播放中保持屏幕常亮
+- 数据与手机/iOS 端完全互通（同一 Gist）：登录 GitHub Token 后音乐库、收藏、继续播放自动同步
+- 「我的」页可登录网盘（遥控器输入不方便，建议先在手机版登录网盘和 GitHub，TV 端登录 GitHub 即可拉取全部数据）
