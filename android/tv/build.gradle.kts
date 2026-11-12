@@ -23,9 +23,24 @@ android {
     // 复用 phone 模块的全部共享源码（core / player / App / phone UI），TV 只额外提供自己的入口
     sourceSets["main"].java.srcDirs("../app/src/main/java")
 
+    // 与手机版共用同一把固定签名（详见 app/build.gradle.kts 的说明），保证能覆盖安装
+    signingConfigs {
+        create("shared") {
+            storeFile = rootProject.file("keystore/cloudtunes-debug.p12")
+            storePassword = "cloudtunes"
+            keyAlias = "cloudtunes"
+            keyPassword = "cloudtunes"
+            storeType = "PKCS12"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("shared")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

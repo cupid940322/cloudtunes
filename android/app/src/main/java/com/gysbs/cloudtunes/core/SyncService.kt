@@ -222,6 +222,7 @@ object SyncService {
             newSession = merged.session,
             newDeletedLibraries = merged.deletedLibraries,
             newDeletedTracks = merged.deletedTracks,
+            mergedUpdatedAt = merged.updatedAt,
         )
 
         // 6. 上传 account.json（没实质变化就跳过，Gist 会留版本历史）
@@ -288,8 +289,19 @@ object SyncService {
             if (m != null && at > m.updatedAt) libMap.remove(id)
         }
 
-        val favorites = if (remoteIsNewer) remote.favorites else local.favorites
-        val recent = if (remoteIsNewer) remote.recent else local.recent
+        // LWW；但「一边为空」时不按时间戳判——新设备空收藏绝不能把云端收藏抹掉
+        val favorites = when {
+            local.favorites.isEmpty() && remote.favorites.isNotEmpty() -> remote.favorites
+            remote.favorites.isEmpty() && local.favorites.isNotEmpty() -> local.favorites
+            remoteIsNewer -> remote.favorites
+            else -> local.favorites
+        }
+        val recent = when {
+            local.recent.isEmpty() && remote.recent.isNotEmpty() -> remote.recent
+            remote.recent.isEmpty() && local.recent.isNotEmpty() -> local.recent
+            remoteIsNewer -> remote.recent
+            else -> local.recent
+        }
 
         val session = when {
             local.session != null && remote.session != null ->

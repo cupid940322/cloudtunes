@@ -6,6 +6,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var showFavorites = false
     @State private var showRecent = false
+    @State private var showAll = false
     @FocusState private var focused: Bool
 
     private var results: [TrackRef] { store.search(query) }
@@ -60,6 +61,9 @@ struct SearchView: View {
             .navigationDestination(isPresented: $showRecent) {
                 RecentTracksView()
             }
+            .navigationDestination(isPresented: $showAll) {
+                AllTracksView()
+            }
         }
     }
 
@@ -107,23 +111,19 @@ struct SearchView: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "快捷入口")
             HStack(spacing: 10) {
-                NavigationLink {
-                    FavoritesView()
-                } label: {
+                // 用 Button + isPresented 跳转，比 NavigationLink 包自定义渐变卡片稳，
+                // 三个快捷入口之前点了没反应就是 NavigationLink 的 label 命不中
+                Button { showFavorites = true } label: {
                     shortcut("收藏", "\(store.favoriteIDs.count) 首", "heart.fill", [Color(red: 0.98, green: 0.42, blue: 0.44),
                                                                               Color(red: 0.99, green: 0.58, blue: 0.42)])
                 }
                 .buttonStyle(.plain)
-                NavigationLink {
-                    RecentTracksView()
-                } label: {
+                Button { showRecent = true } label: {
                     shortcut("最近播放", "\(store.recentIDs.count) 首", "clock.fill", [Color(red: 0.42, green: 0.55, blue: 0.98),
                                                                               Color(red: 0.55, green: 0.45, blue: 0.95)])
                 }
                 .buttonStyle(.plain)
-                NavigationLink {
-                    AllTracksView()
-                } label: {
+                Button { showAll = true } label: {
                     shortcut("全部歌曲", "\(store.allTracks().count) 首", "music.note.list", [Color(red: 0.30, green: 0.75, blue: 0.62),
                                                                               Color(red: 0.28, green: 0.62, blue: 0.80)])
                 }
@@ -145,6 +145,8 @@ struct SearchView: View {
         .frame(height: 92)
         .background(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing),
                     in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // 整块卡片（含渐变背景）都要能点，不然只有文字那一小块响应
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private var songSection: some View {

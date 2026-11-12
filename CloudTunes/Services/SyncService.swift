@@ -296,8 +296,23 @@ final class SyncService: ObservableObject {
         // 收藏 / 播放记录：整体取较新的一方。
         // 单人多设备场景下冲突概率很低，整体覆盖比逐条合并更好预测；
         // 逐条合并反而会让「取消收藏」永远同步不过去。
-        let favorites = remoteIsNewer ? remote.favorites : local.favorites
-        let recent = remoteIsNewer ? remote.recent : local.recent
+        // 但「一边为空」时不按时间戳判：新设备（收藏为空）绝不能把云端收藏抹掉。
+        let favorites: [String]
+        if local.favorites.isEmpty, !remote.favorites.isEmpty {
+            favorites = remote.favorites
+        } else if remote.favorites.isEmpty, !local.favorites.isEmpty {
+            favorites = local.favorites
+        } else {
+            favorites = remoteIsNewer ? remote.favorites : local.favorites
+        }
+        let recent: [String]
+        if local.recent.isEmpty, !remote.recent.isEmpty {
+            recent = remote.recent
+        } else if remote.recent.isEmpty, !local.recent.isEmpty {
+            recent = local.recent
+        } else {
+            recent = remoteIsNewer ? remote.recent : local.recent
+        }
 
         // 继续播放：整体取 updatedAt 新的（播放进度就在这里面，不必单独存一张表）
         let session: PlaybackSession?

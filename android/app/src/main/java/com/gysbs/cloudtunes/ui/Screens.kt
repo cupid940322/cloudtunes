@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -124,13 +125,21 @@ fun HomeTab(openLibrary: (String) -> Unit) {
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             }
 
-            // 继续播放
+            // 继续播放 / 正在播放：图标和标题都跟着真实播放状态走，不再永远挂着 ▶
             val s = session
-            if (s != null && s.tracks.isNotEmpty()) {
+            val live = PlayerManager.currentTrack
+            val playing = PlayerManager.isPlaying.value
+            val cardTrack = (if (playing) live else null) ?: s?.tracks?.getOrNull(s.index)
+            if (cardTrack != null) {
                 item {
-                    val t = s.tracks.getOrNull(s.index) ?: return@item
+                    val t = cardTrack
+                    val queueSize = if (PlayerManager.queue.isNotEmpty()) PlayerManager.queue.size else (s?.tracks?.size ?: 0)
                     Card(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).clickable {
-                        PlayerManager.resumeSession(s.position)
+                        if (PlayerManager.queue.isEmpty()) {
+                            s?.let { PlayerManager.resumeSession(it.position) }
+                        } else {
+                            PlayerManager.togglePlayPause()
+                        }
                     }) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             val cover = LibraryStore.findTrack(t.id)?.second?.artworkURL
@@ -141,15 +150,18 @@ fun HomeTab(openLibrary: (String) -> Unit) {
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text("继续播放", style = MaterialTheme.typography.labelSmall,
+                                Text(if (playing) "正在播放" else "继续播放", style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary)
                                 Text(t.displayTitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     style = MaterialTheme.typography.titleSmall)
-                                Text("${t.displayArtist} · 队列 ${s.tracks.size} 首",
+                                Text("${t.displayArtist} · 队列 $queueSize 首",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Icon(Icons.Filled.PlayArrow, null, tint = MaterialTheme.colorScheme.primary)
+                            Icon(
+                                if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                null, tint = MaterialTheme.colorScheme.primary,
+                            )
                         }
                     }
                 }

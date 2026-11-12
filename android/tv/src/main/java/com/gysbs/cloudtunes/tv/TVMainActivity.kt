@@ -130,7 +130,7 @@ fun TVApp() {
                     Modifier.fillMaxWidth().padding(horizontal = 48.dp, vertical = 18.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("云音", style = MaterialTheme.typography.headlineMedium,
+                    Text("汤圆云音盒", style = MaterialTheme.typography.headlineMedium,
                         color = TVAccent, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.width(40.dp))
                     tabs.forEachIndexed { i, label ->

@@ -112,12 +112,16 @@ struct HomeTabView: View {
             // 没有在播的曲子，但上次有整张播放列表 → 点一下恢复整个队列继续听
             let track = session.tracks[session.index]
             Button {
-                player.resumeSavedSession()
+                if player.currentTrack == nil && !player.isPlaying {
+                    player.resumeSavedSession()
+                } else {
+                    player.togglePlay()
+                }
             } label: {
                 cardShell(artwork: track.artworkFile) {
                     CoverView(file: track.artworkFile, size: 64, corner: 14, showsShadow: true)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("继续播放")
+                        Text(player.isPlaying ? "正在播放" : "继续播放")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.85))
                         Text(track.title)
@@ -130,7 +134,7 @@ struct HomeTabView: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    Image(systemName: "play.fill")
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(Theme.accent)
                         .frame(width: 40, height: 40)

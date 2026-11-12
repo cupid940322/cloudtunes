@@ -29,6 +29,16 @@ object LibraryStore {
     private val prefs by lazy { appContext.getSharedPreferences("cloudtunes", Context.MODE_PRIVATE) }
     private val filesDir by lazy { appContext.filesDir }
 
+    /// account 级数据（收藏 / 最近播放 / 会话）最后一次**真实改动**的时间。
+    /// 以前 snapshot 里直接写 Instant.now()，等于每台设备每次同步都自称「刚刚改过」，
+    /// 结果新设备拿空收藏把云端覆盖掉——iOS 有 25 首收藏、安卓这边一首不剩就是这么来的。
+    private var localChangedAt: Instant = Instant.EPOCH
+
+    private fun markLocalChanged(at: Instant = Instant.now()) {
+        localChangedAt = at
+        prefs.edit().putString("localChangedAt", at.toString()).apply()
+    }
+
     fun init(context: Context) {
         appContext = context.applicationContext
         load()
@@ -59,6 +69,10 @@ object LibraryStore {
                         .takeIf { it.tracks.isNotEmpty() && it.index < it.tracks.size }
                 } catch (e: Exception) { null }
             }
+            // 老版本没存过这个时间戳：退化成「各库最近修改时间」，避免凭空比云端新
+            localChangedAt = prefs.getString("localChangedAt", null)
+                ?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                ?: (libraries.mapNotNull { it.updatedAt ?: it.createdAt }.maxOrNull() ?: Instant.EPOCH)
         } catch (e: Exception) {
             android.util.Log.e("LibraryStore", "load failed", e)
         }
@@ -83,6 +97,8 @@ object LibraryStore {
             deletedTracks = deletedTracks.mapValues { it.value.toMap() },
         )
         java.io.File(filesDir, "library.json").writeText(gistJson.encodeToString(data))
+        // 本地数据确实变了，记下时间；applySync 落完云端数据后会把它改回 merged.updatedAt
+        markLocalChanged()
     } catch (e: Exception) {
         android.util.Log.e("LibraryStore", "persist failed", e)
     }
@@ -354,29 +370,34 @@ object LibraryStore {
 
     // ── 同步 ──
 
-    fun syncSnapshot(deviceName: String = Build.MODEL ?: "Android"): SyncAccount = SyncAccount(
-        schemaVersion = 1,
-        updatedAt = Instant.now(),
-        deviceName = deviceName,
-        libraries = libraries.map {
-            LibraryMeta(
-                id = it.id,
-                name = it.name,
-                providerKindRaw = it.providerKindRaw,
-                folderID = it.folderID,
-                folderName = it.folderName,
-                includeSubfolders = it.includeSubfolders ?: true,
-                createdAt = it.createdAt,
-                lastScanAt = it.lastScanAt,
-                updatedAt = it.updatedAt ?: it.createdAt,
-            )
-        },
-        favorites = favorites.toList(),
-        recent = recent.toList(),
-        session = session.value,
-        deletedLibraries = deletedLibraries.toMap(),
-        deletedTracks = deletedTracks.mapValues { it.value.toMap() },
-    )
+    fun syncSnapshot(deviceName: String = Build.MODEL ?: "Android"): SyncAccount {
+        // account.updatedAt 必须是「本机数据真实最后改动时间」，不能是 now()，
+        // 否则这台设备每次都会在 LWW 里赢，把另一台设备的收藏/最近播放覆盖掉。
+        val newestLibrary = libraries.mapNotNull { it.updatedAt ?: it.createdAt }.maxOrNull() ?: Instant.EPOCH
+        return SyncAccount(
+            schemaVersion = 1,
+            updatedAt = maxOf(newestLibrary, localChangedAt),
+            deviceName = deviceName,
+            libraries = libraries.map {
+                LibraryMeta(
+                    id = it.id,
+                    name = it.name,
+                    providerKindRaw = it.providerKindRaw,
+                    folderID = it.folderID,
+                    folderName = it.folderName,
+                    includeSubfolders = it.includeSubfolders ?: true,
+                    createdAt = it.createdAt,
+                    lastScanAt = it.lastScanAt,
+                    updatedAt = it.updatedAt ?: it.createdAt,
+                )
+            },
+            favorites = favorites.toList(),
+            recent = recent.toList(),
+            session = session.value,
+            deletedLibraries = deletedLibraries.toMap(),
+            deletedTracks = deletedTracks.mapValues { it.value.toMap() },
+        )
+    }
 
     fun applySync(
         newLibraries: List<MusicLibrary>,
@@ -385,6 +406,8 @@ object LibraryStore {
         newSession: PlaybackSession?,
         newDeletedLibraries: Map<String, Instant>,
         newDeletedTracks: Map<String, Map<String, Instant>>,
+        /// 合并结果的时间戳：落盘后本机就算「和云端一样新」，不要伪装成刚改过
+        mergedUpdatedAt: Instant = Instant.EPOCH,
     ) {
         libraries.clear()
         libraries.addAll(newLibraries)
@@ -399,6 +422,9 @@ object LibraryStore {
         newSession?.let { session.value = it }
         persist()
         persistSession()
+        // persist() 会把 localChangedAt 顶成 now()，这里改回合入结果的时间，
+        // 让「刚同步完」的设备在下一轮 LWW 里不会凭空虚赢
+        if (mergedUpdatedAt > Instant.EPOCH) markLocalChanged(mergedUpdatedAt)
     }
 }
 

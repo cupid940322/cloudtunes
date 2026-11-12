@@ -20,9 +20,26 @@ android {
         versionName = "1.0.$buildNumber"
     }
 
+    // 固定签名：CI 每次跑在全新 runner 上，自动生成的 debug keystore 每次都不一样，
+    // 签名不一致 → 新版本无法覆盖安装，只能先卸载（数据全丢）。
+    // 这里用仓库里固定的 keystore，手机版和 TV 版共用，之后所有版本都能直接覆盖升级。
+    signingConfigs {
+        create("shared") {
+            storeFile = rootProject.file("keystore/cloudtunes-debug.p12")
+            storePassword = "cloudtunes"
+            keyAlias = "cloudtunes"
+            keyPassword = "cloudtunes"
+            storeType = "PKCS12"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("shared")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
