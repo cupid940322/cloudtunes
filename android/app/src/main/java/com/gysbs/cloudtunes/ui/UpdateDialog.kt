@@ -9,6 +9,17 @@ import androidx.compose.ui.unit.dp
 import com.gysbs.cloudtunes.core.UpdateCenter
 import kotlinx.coroutines.launch
 
+/// 用系统浏览器打开链接；没有浏览器的设备（TV）返回 false
+internal fun openUrl(context: android.content.Context, url: String): Boolean = try {
+    context.startActivity(
+        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    )
+    true
+} catch (e: Exception) {
+    false
+}
+
 /// 全局更新弹窗（放在 AppRoot / TVApp 里一次即可）
 @Composable
 fun UpdateDialogs() {
@@ -85,6 +96,14 @@ fun UpdateDialogs() {
                 title = { Text("更新未完成") },
                 text = { Text(s.message) },
                 confirmButton = {
+                    Button(onClick = {
+                        // TV 等无浏览器设备打不开时保留弹窗（消息里已有网址）
+                        if (openUrl(context, com.gysbs.cloudtunes.core.UpdateCenter.RELEASES_PAGE)) {
+                            UpdateCenter.dismiss()
+                        }
+                    }) { Text("用浏览器打开下载页") }
+                },
+                dismissButton = {
                     TextButton(onClick = { UpdateCenter.dismiss() }) { Text("知道了") }
                 },
             )

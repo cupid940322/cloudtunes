@@ -22,14 +22,18 @@ object UpdateCenter {
     private const val TAG_PREFIX = "app-android-"
     private const val PROXY = "https://gh-proxy.com/"
 
-    // 更新清单（CI 每次发版提交到 main）：国内可达镜像按序尝试
+    // 更新清单（CI 每次发版提交到 main）：国内可达镜像按序尝试（2026-11 实测存活）
     private val MANIFEST_MIRRORS = listOf(
         "https://gh-proxy.com/https://raw.githubusercontent.com/$REPO/main/update/android-latest.json",
         "https://ghproxy.net/https://raw.githubusercontent.com/$REPO/main/update/android-latest.json",
+        "https://ghfast.top/https://raw.githubusercontent.com/$REPO/main/update/android-latest.json",
+        "https://gcore.jsdelivr.net/gh/$REPO@main/update/android-latest.json",
+        "https://testingcf.jsdelivr.net/gh/$REPO@main/update/android-latest.json",
         "https://raw.githubusercontent.com/$REPO/main/update/android-latest.json",
-        "https://cdn.jsdelivr.net/gh/$REPO@main/update/android-latest.json",
-        "https://fastly.jsdelivr.net/gh/$REPO@main/update/android-latest.json",
     )
+
+    /// 下载页（浏览器直接可达 github.com，作为最后的兜底出口）
+    const val RELEASES_PAGE = "https://github.com/cupid940322/cloudtunes/releases/latest"
 
     /// 短超时客户端（多镜像快速切换）
     private val fastClient by lazy {
@@ -58,6 +62,10 @@ object UpdateCenter {
     }
 
     val state = mutableStateOf<State>(State.Idle)
+
+    /// 最近一次检查的通道诊断信息（失败时展示给用户）
+    var lastDiagnostics: String = ""
+        private set
 
     // ── 本地信息 ──
 
@@ -88,7 +96,7 @@ object UpdateCenter {
         state.value = State.Checking
 
         // ① 首选：仓库里的更新清单（镜像多、国内可达，不依赖 Releases API）
-        val manifest = fetchManifest(isTv(context))
+        val (manifest, manifestDiag) = fetchManifest(isTv(context))
         if (manifest != null) {
             p.edit().putLong("lastCheck", System.currentTimeMillis()).apply()
             val current = currentVersionCode(context)
@@ -101,12 +109,15 @@ object UpdateCenter {
                 null
             }
         }
+        lastDiagnostics = manifestDiag
 
         // ② 兜底：GitHub Releases API
         val releases = fetchReleases()
         if (releases == null) {
             // 静默检查失败不出声，手动检查才提示
-            state.value = if (force) State.Failed("检查更新失败：无法连接 GitHub（可稍后再试）") else State.Idle
+            state.value = if (force) State.Failed(
+                "所有更新通道都连不上（$manifestDiag）。\n可点「用浏览器打开下载页」手动下载安装；没有浏览器的设备可直接访问：\n$RELEASES_PAGE"
+            ) else State.Idle
             return null
         }
         p.edit().putLong("lastCheck", System.currentTimeMillis()).apply()
@@ -159,34 +170,39 @@ object UpdateCenter {
         }
     }
 
-    /// 拉取仓库更新清单（多镜像），返回 null 表示全部失败
-    private fun fetchManifest(isTv: Boolean): UpdateInfo? {
+    /// 拉取仓库更新清单（多镜像）。返回 (结果, 各镜像失败原因摘要)
+    private fun fetchManifest(isTv: Boolean): Pair<UpdateInfo?, String> {
+        val errors = mutableListOf<String>()
         for (url in MANIFEST_MIRRORS) {
+            val host = runCatching { java.net.URI(url).host }.getOrDefault("镜像")
             try {
                 val req = Request.Builder().url(url)
                     .header("User-Agent", "CloudTunes-Android")
                     .get().build()
                 fastClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return@use
-                    val text = resp.body?.string() ?: return@use
+                    if (!resp.isSuccessful) {
+                        errors += "$host(HTTP ${resp.code})"
+                        return@use
+                    }
+                    val text = resp.body?.string() ?: run { errors += "$host(空响应)"; return@use }
                     val obj = JSONObject(text)
                     val code = obj.optInt("versionCode", 0)
-                    if (code <= 0) return@use
+                    if (code <= 0) { errors += "$host(内容异常)"; return@use }
                     val apkUrl = (if (isTv) obj.optString("apkTv") else obj.optString("apkPhone"))
-                        .takeIf { it.isNotEmpty() } ?: return@use
+                        .takeIf { it.isNotEmpty() } ?: run { errors += "$host(缺APK地址)"; return@use }
                     return UpdateInfo(
                         versionCode = code,
                         versionName = obj.optString("versionName").ifEmpty { "1.0.$code" },
                         notes = obj.optString("notes").ifEmpty { "本次更新包含问题修复与体验优化。" },
                         apkUrl = apkUrl,
                         size = 0L,
-                    )
+                    ) to "已通过 $host 获取"
                 }
             } catch (e: Exception) {
-                // 换下一个镜像
+                errors += "$host(${e.message?.take(36) ?: "连接失败"})"
             }
         }
-        return null
+        return null to errors.joinToString("；")
     }
 
     private fun fetchReleases(): JSONArray? {
