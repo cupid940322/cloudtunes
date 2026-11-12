@@ -74,13 +74,17 @@ final class PlayerManager: NSObject, ObservableObject {
     private func observeEnd(of item: AVPlayerItem) {
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: nil)
+        // 只监听「真的播完了」。
+        // 播放失败（FailedToPlayToEndTime）**不能**走这里：失败有专门的缓存兜底 / 报错路径，
+        // 如果失败也切下一首，直链整批被拒时会一路快速跳到列表末尾。
         NotificationCenter.default.addObserver(self, selector: #selector(handleItemEnded(_:)),
                                                name: .AVPlayerItemDidPlayToEndTime, object: item)
-        NotificationCenter.default.addObserver(self, selector: #selector(handleItemEnded(_:)),
-                                               name: .AVPlayerItemFailedToPlayToEndTime, object: item)
     }
 
     @objc private func handleItemEnded(_ note: Notification) {
+        // 只认当前这一首的「播完」事件，老 item 迟到的通知不处理
+        guard let item = note.object as? AVPlayerItem,
+              item === player.currentItem else { return }
         DispatchQueue.main.async { [weak self] in
             self?.advanceAfterFinish()
         }
@@ -103,11 +107,19 @@ final class PlayerManager: NSObject, ObservableObject {
             // 列表循环：回到第一首
             playAt(0, provider: p)
         } else {
-            isPlaying = false
+            // 整张列表放完了：回到列表开头停住。
+            // 不这么做的话，续播会话会停在最后一首，
+            // 之后每次「继续播放」都从最后一首开始，看起来就像凭空跳歌。
+            dtsPlayer?.stop()
+            dtsPlayer = nil
+            currentIndex = 0
             currentTime = 0
-            dtsPlayer?.pause()
+            duration = 0
+            isPlaying = false
+            player.pause()
             player.seek(to: .zero)
             updateNowPlaying()
+            persistSession()
         }
     }
 
