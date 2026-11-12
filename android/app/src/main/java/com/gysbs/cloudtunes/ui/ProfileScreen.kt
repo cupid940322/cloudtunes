@@ -1,5 +1,6 @@
 package com.gysbs.cloudtunes.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -65,6 +66,7 @@ fun ProfileTab() {
 @Composable
 private fun GitHubCard() {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val signedIn = GitHubAccount.isSignedIn
     var token by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -95,24 +97,57 @@ private fun GitHubCard() {
                     }) { Text("退出登录") }
                 }
             } else {
-                Text("需要一个 GitHub 个人访问令牌（经典 token，勾选 gist 权限即可）：Settings → Developer settings → Personal access tokens",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(token, { token = it }, label = { Text("GitHub Token") },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true)
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                Button(enabled = token.isNotBlank() && !busy, onClick = {
-                    busy = true
-                    scope.launch {
-                        try {
-                            SyncService.signIn(token)
-                            SyncService.sync("登录后同步")
-                        } catch (e: Exception) {
-                            error = e.message
+                var showTokenField by remember { mutableStateOf(false) }
+                // 三步引导（与 iOS 版一致）
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant,
+                            androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text("1. 点下面的按钮，去 GitHub 生成一个令牌", style = MaterialTheme.typography.bodySmall)
+                    Text("2. 页面里的 gist 权限已经帮你勾好了，直接拉到最下面点 Generate token",
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("3. 复制那串 ghp_ 开头的字符，回来粘贴到这里", style = MaterialTheme.typography.bodySmall)
+                }
+
+                Button(
+                    onClick = {
+                        val ok = openUrl(context, TOKEN_URL)
+                        if (!ok) {
+                            error = "这台设备没有浏览器，无法跳转。请在手机/电脑上打开：\n$TOKEN_URL"
                         }
-                        busy = false
-                    }
-                }) { Text(if (busy) "验证中…" else "登录并同步") }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("打开 GitHub 生成令牌") }
+
+                if (showTokenField) {
+                    OutlinedTextField(token, { token = it }, label = { Text("GitHub Token（ghp_ 开头）") },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    Button(enabled = token.isNotBlank() && !busy, onClick = {
+                        busy = true
+                        scope.launch {
+                            try {
+                                SyncService.signIn(token)
+                                SyncService.sync("登录后同步")
+                            } catch (e: Exception) {
+                                error = e.message
+                            }
+                            busy = false
+                        }
+                    }) { Text(if (busy) "验证中…" else "登录并同步") }
+                } else {
+                    OutlinedButton(
+                        onClick = { showTokenField = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("我已经有令牌了") }
+                }
+                error?.let {
+                    if (!showTokenField) Text(it, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
@@ -295,4 +330,19 @@ private fun BaiduLoginDialog(onDismiss: () -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+/// GitHub 令牌创建页：预勾选 gist 权限并带描述（与 iOS 端一致）
+private const val TOKEN_URL =
+    "https://github.com/settings/tokens/new?scopes=gist&description=CloudTunes"
+
+/// 用系统浏览器打开链接；TV 等没有浏览器的设备返回 false
+private fun openUrl(context: android.content.Context, url: String): Boolean = try {
+    context.startActivity(
+        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    )
+    true
+} catch (e: Exception) {
+    false
 }
