@@ -122,6 +122,17 @@ private fun GitHubCard() {
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("打开 GitHub 生成令牌") }
 
+                // 查看/管理已有令牌：令牌只在创建时显示一次，丢了要在这页重新生成
+                TextButton(
+                    onClick = {
+                        val ok = openUrl(context, TOKEN_LIST_URL)
+                        if (!ok) {
+                            error = "请在手机/电脑上打开：\n$TOKEN_LIST_URL"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("查看已有令牌（找不到时重新生成）") }
+
                 if (showTokenField) {
                     OutlinedTextField(token, { token = it }, label = { Text("GitHub Token（ghp_ 开头）") },
                         modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -332,9 +343,13 @@ private fun BaiduLoginDialog(onDismiss: () -> Unit) {
     )
 }
 
-/// GitHub 令牌创建页：预勾选 gist 权限并带描述（与 iOS 端一致）
+/// GitHub 令牌创建页：预勾选 gist 权限并带描述（描述带平台名，避免与 iOS 端同名冲突）
 private const val TOKEN_URL =
-    "https://github.com/settings/tokens/new?scopes=gist&description=CloudTunes"
+    "https://github.com/settings/tokens/new?scopes=gist&description=CloudTunes-Android"
+
+/// 已有令牌管理页：查看列表 / 重新生成 / 删除
+private const val TOKEN_LIST_URL =
+    "https://github.com/settings/tokens"
 
 /// 用系统浏览器打开链接；TV 等没有浏览器的设备返回 false
 private fun openUrl(context: android.content.Context, url: String): Boolean = try {
