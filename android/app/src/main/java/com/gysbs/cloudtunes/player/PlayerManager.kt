@@ -82,6 +82,7 @@ object PlayerManager {
         val p = ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .build()
+        p.setWakeMode(androidx.media3.common.C.WAKE_MODE_NETWORK) // TV/锁屏时保持网络唤醒
         p.addListener(playerListener)
         player = p
     }

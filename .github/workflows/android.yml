@@ -28,7 +28,7 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build debug APK
+      - name: Build debug APKs
         working-directory: android
         run: |
           set -o pipefail
@@ -58,5 +58,9 @@ jobs:
           name: 安卓版 build ${{ github.run_number }}
           body: |
             CloudTunes 安卓版 APK（调试签名，直接安装即可）。
+            - cloudtunes-phone-debug.apk：手机版（Android 8+）
+            - cloudtunes-tv-debug.apk：TV 版（Android 7+，TV 桌面可直接启动）
             对应 iOS 端提交：${{ github.sha }}
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+          files: |
+            android/app/build/outputs/apk/debug/cloudtunes-phone-debug.apk
+            android/tv/build/outputs/apk/debug/cloudtunes-tv-debug.apk

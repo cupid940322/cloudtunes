@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "CloudTunes"
-include(":app")
+include(":app", ":tv")
