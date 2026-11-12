@@ -1,11 +1,13 @@
 name: Auto Retry Cancelled Build
 
 # GitHub 免费层的 macOS runner 经常排不到机器：构建任务在 "Set up job"
-# 卡十几分钟后被系统标成 cancelled，代码本身一点问题都没有。
-# 这个 workflow 监听构建结果，只要是被 cancelled 就自动重跑一次。
+# 卡十几分钟后被系统标成 cancelled——代码本身一点问题都没有。
+# 这个 workflow 监听构建结果，只要是「job 被 cancelled」就自动重跑一次。
 #
-# 注意：rerun 复用同一个 run id，不会再触发 workflow_run，
-# 所以不会无限套娃；而 cancelled 的 job 没有分配到机器，也不消耗额度。
+# 注意：job 被取消时，run 级别的 conclusion 有时报 cancelled、有时报 failure，
+# 所以不能只看 conclusion，要再查一次 jobs 接口确认是「没抢到机器」而不是「编译报错」。
+# rerun 复用同一个 run id，不会再触发 workflow_run，所以不会无限套娃；
+# 而被 cancelled 的 job 没分配到机器，也不消耗额度。
 
 on:
   workflow_run:
@@ -14,25 +16,38 @@ on:
 
 jobs:
   retry:
-    # 只处理「被取消」；编译失败（failure）说明代码有问题，重跑没意义
-    if: github.event.workflow_run.conclusion == 'cancelled'
+    if: |
+      github.event.workflow_run.conclusion == 'cancelled' ||
+      github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     permissions:
       actions: write
+      contents: read
     steps:
-      - name: Re-run the cancelled build
+      - name: Re-run only if the job was cancelled (no runner)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
-          echo "run id: ${{ github.event.workflow_run.id }}"
-          echo "attempt: ${{ github.event.workflow_run.run_attempt }}"
-          # 最多重试 12 次：cancelled 的 job 没分配到机器、不消耗额度，
-          # 多试几次是无害的，反而能撞上池子偶尔空出来的瞬间
-          if [ "${{ github.event.workflow_run.run_attempt }}" -ge 12 ]; then
+          set -e
+          cancelled=$(curl -sS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" \
+            | python3 -c "import sys,json;d=json.load(sys.stdin);print('yes' if any(j.get('conclusion')=='cancelled' for j in d.get('jobs',[])) else 'no')")
+          echo "job cancelled? $cancelled (attempt $ATTEMPT)"
+          if [ "$cancelled" != "yes" ]; then
+            echo "真实编译失败，重跑没意义，交给人看日志。"
+            exit 0
+          fi
+          if [ "$ATTEMPT" -ge 12 ]; then
             echo "已重试 12 次仍未拿到 runner，放弃。等每天 UTC 10:00 的定时构建。"
             exit 0
           fi
           curl -sS -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/rerun"
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN_ID/rerun"
           echo "已提交重跑请求"
