@@ -1,0 +1,9 @@
+{
+  "versionCode": 12,
+  "versionName": "1.0.12",
+  "tag": "app-android-12",
+  "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-12/cloudtunes-phone-debug.apk",
+  "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-12/cloudtunes-tv-debug.apk",
+  "notes": "CloudTunes 安卓版 v1.0.12",
+  "publishedAt": "2026-11-12T20:10:02+08:00"
+}
