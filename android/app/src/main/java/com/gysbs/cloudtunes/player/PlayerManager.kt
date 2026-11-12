@@ -18,6 +18,7 @@ import android.net.Uri
 import com.gysbs.cloudtunes.core.BaiduProvider
 import com.gysbs.cloudtunes.core.CloudFile
 import com.gysbs.cloudtunes.core.CloudKind
+import com.gysbs.cloudtunes.core.CrashLog
 import com.gysbs.cloudtunes.core.GuangyaProvider
 import com.gysbs.cloudtunes.core.LibraryStore
 import com.gysbs.cloudtunes.core.LibraryTrack
@@ -26,9 +27,11 @@ import com.gysbs.cloudtunes.core.Lyrics
 import com.gysbs.cloudtunes.core.PlaybackSession
 import com.gysbs.cloudtunes.core.QuarkProvider
 import com.gysbs.cloudtunes.core.Track
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -53,7 +56,13 @@ class HeaderedDataSourceFactory : DataSource.Factory {
 object PlayerManager {
 
     private lateinit var appContext: Context
-    private val scope = CoroutineScope(Dispatchers.Main)
+
+    /// 播放协程域：SupervisorJob 保证一次失败不会连坐整个域，异常统一进崩溃日志而不是闪退
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main + CoroutineExceptionHandler { _, t ->
+            CrashLog.record("播放协程", t)
+        }
+    )
 
     var player: ExoPlayer? = null
 
@@ -75,16 +84,32 @@ object PlayerManager {
     private var consecutiveFailures = 0
     private var sessionPersistCounter = 0
 
-    /// 由 PlaybackService.onCreate 调
+    /// 由 PlaybackService.onCreate 调；也作为播放前的兜底（服务被杀后自动重建）
     fun attach(context: Context) {
         if (player != null) return
         appContext = context.applicationContext
-        val p = ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-            .build()
-        p.setWakeMode(androidx.media3.common.C.WAKE_MODE_NETWORK) // TV/锁屏时保持网络唤醒
-        p.addListener(playerListener)
-        player = p
+        try {
+            val p = ExoPlayer.Builder(appContext)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+                .build()
+            // WAKE_MODE_NETWORK 需要 android.permission.WAKE_LOCK。
+            // 个别 ROM 会拒绝，抛 SecurityException 就直接放弃唤醒锁，不影响播放本身。
+            try {
+                p.setWakeMode(androidx.media3.common.C.WAKE_MODE_NETWORK)
+            } catch (t: Throwable) {
+                CrashLog.record("setWakeMode（WAKE_LOCK 权限缺失？）", t)
+            }
+            p.addListener(playerListener)
+            player = p
+        } catch (t: Throwable) {
+            CrashLog.record("创建 ExoPlayer 失败", t)
+        }
+    }
+
+    /// 拿播放器；为空时尝试重建（例如前台服务被系统回收过）
+    private fun ensurePlayer(): ExoPlayer? {
+        if (player == null && ::appContext.isInitialized) attach(appContext)
+        return player
     }
 
     private val playerListener = object : Player.Listener {
@@ -162,17 +187,25 @@ object PlayerManager {
     }
 
     fun togglePlayPause() {
-        val p = player ?: return
         if (queue.isEmpty()) {
             // 没有队列：尝试恢复会话
             LibraryStore.session.value?.let { resumeSession(it.position) }
             return
         }
-        if (p.isPlaying) p.pause() else p.prepare(); p.play()
+        val p = ensurePlayer() ?: return
+        try {
+            if (p.isPlaying) p.pause() else { p.prepare(); p.play() }
+        } catch (t: Throwable) {
+            CrashLog.record("切换播放/暂停", t)
+        }
     }
 
     fun seekTo(seconds: Double) {
-        player?.seekTo((seconds * 1000).toLong())
+        try {
+            ensurePlayer()?.seekTo((seconds * 1000).toLong())
+        } catch (t: Throwable) {
+            CrashLog.record("seek", t)
+        }
         currentTime.value = seconds
         updateLyricLine()
     }
@@ -201,46 +234,74 @@ object PlayerManager {
         currentIndex.value = 0
         currentTime.value = 0.0
         duration.value = 0.0
-        player?.pause()
-        player?.seekTo(0)
+        try {
+            player?.pause()
+            player?.seekTo(0)
+        } catch (t: Throwable) {
+            CrashLog.record("列表播完回卷", t)
+        }
         persistSession()
     }
 
-    private suspend fun prepareAndPlay(track: Track, startAt: Double = 0.0) = withContext(Dispatchers.Main) {
-        val p = player ?: return@withContext
+    private suspend fun prepareAndPlay(track: Track, startAt: Double = 0.0) {
         isLoading.value = true
         loadError.value = null
         currentTime.value = startAt
         duration.value = track.duration ?: 0.0
         updateLyricLine()
 
-        try {
-            val (url, headers) = resolveURL(track)
-            dataSourceFactory.headers = headers
-            val artwork = LibraryStore.findTrack(track.id)?.second?.artworkURL
-                ?: track.artworkFile?.takeIf { it.startsWith("http") }
-            val metadata = MediaMetadata.Builder()
-                .setTitle(track.displayTitle)
-                .setArtist(track.displayArtist)
-                .setAlbumTitle(track.album)
-                .apply { artwork?.let { setArtworkUri(Uri.parse(it)) } }
-                .build()
-            val item = MediaItem.Builder()
-                .setUri(url)
-                .setMediaId(track.id)
-                .setMediaMetadata(metadata)
-                .build()
-            p.setMediaItem(item, (startAt * 1000).toLong())
-            p.prepare()
-            p.play()
-            persistSession()
-            fetchLyrics(track)
-        } catch (e: Exception) {
-            isLoading.value = false
-            loadError.value = "取播放直链失败：${e.message}"
-            consecutiveFailures++
-            if (consecutiveFailures < 5 && queue.size > 1) playNext(auto = true)
+        // ① 取直链：一定放在 IO 线程（网盘接口是阻塞的），失败只降级不闪退
+        val resolved = try {
+            withContext(Dispatchers.IO) { resolveURL(track) }
+        } catch (t: Throwable) {
+            CrashLog.record("解析播放直链失败 ${track.displayTitle}", t)
+            null
         }
+        if (resolved == null) {
+            onPlayFailed("取播放直链失败，换下一首试试")
+            return
+        }
+
+        // ② 交给 ExoPlayer：同样全程兜底
+        withContext(Dispatchers.Main) {
+            try {
+                val p = ensurePlayer() ?: run {
+                    onPlayFailed("播放器未就绪，请退出重进")
+                    return@withContext
+                }
+                val (url, headers) = resolved
+                dataSourceFactory.headers = headers
+                val artwork = LibraryStore.findTrack(track.id)?.second?.artworkURL
+                    ?: track.artworkFile?.takeIf { it.startsWith("http") }
+                val metadata = MediaMetadata.Builder()
+                    .setTitle(track.displayTitle)
+                    .setArtist(track.displayArtist)
+                    .setAlbumTitle(track.album)
+                    .apply { artwork?.let { runCatching { setArtworkUri(Uri.parse(it)) } } }
+                    .build()
+                val item = MediaItem.Builder()
+                    .setUri(url)
+                    .setMediaId(track.id)
+                    .setMediaMetadata(metadata)
+                    .build()
+                p.setMediaItem(item, (startAt * 1000).toLong())
+                p.prepare()
+                p.play()
+                persistSession()
+                fetchLyrics(track)
+            } catch (t: Throwable) {
+                CrashLog.record("启动播放失败 ${track.displayTitle}", t)
+                onPlayFailed("播放失败：${t.message ?: t.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private fun onPlayFailed(message: String) {
+        isLoading.value = false
+        isPlaying.value = false
+        loadError.value = message
+        consecutiveFailures++
+        if (consecutiveFailures < 5 && queue.size > 1) playNext(auto = true)
     }
 
     // ── 歌词 ──
@@ -318,26 +379,38 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        PlayerManager.attach(this)
-        mediaSession = MediaSession.Builder(this, PlayerManager.player!!).build()
+        try {
+            PlayerManager.attach(this)
+            val p = PlayerManager.player
+            if (p != null) mediaSession = MediaSession.Builder(this, p).build()
+        } catch (t: Throwable) {
+            // 媒体会话建不起来只是没有通知栏控件，绝不能让 App 起不来
+            CrashLog.record("PlaybackService 初始化", t)
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onTaskRemoved(rootIntent: android.content.Intent?) {
-        val player = mediaSession?.player
-        if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
-            stopSelf()
+        try {
+            val player = mediaSession?.player
+            if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
+                stopSelf()
+            }
+        } catch (t: Throwable) {
+            CrashLog.record("onTaskRemoved", t)
         }
     }
 
     override fun onDestroy() {
-        mediaSession?.run {
-            player.release()
-            release()
+        try {
+            mediaSession?.release()
+        } catch (t: Throwable) {
+            CrashLog.record("释放媒体会话", t)
         }
         mediaSession = null
-        PlayerManager.player = null
+        // 注意：不 release ExoPlayer、也不把 PlayerManager.player 置空。
+        // 服务被系统回收时界面还在用播放器，置空会让「继续播放」变成点了没反应。
         super.onDestroy()
     }
 }

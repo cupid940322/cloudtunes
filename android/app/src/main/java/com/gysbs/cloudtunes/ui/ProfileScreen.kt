@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gysbs.cloudtunes.core.BaiduProvider
 import com.gysbs.cloudtunes.core.CloudKind
+import com.gysbs.cloudtunes.core.CrashLog
 import com.gysbs.cloudtunes.core.GitHubAccount
 import com.gysbs.cloudtunes.core.GuangyaProvider
 import com.gysbs.cloudtunes.core.QuarkProvider
@@ -28,6 +29,8 @@ fun ProfileTab() {
         SyncStatusLine()
 
         UpdateCard()
+
+        CrashLogCard()
 
         GitHubCard()
 
@@ -59,6 +62,51 @@ fun ProfileTab() {
             "登录同一个 GitHub 账号即可同步音乐库元数据、封面、收藏、播放记录和继续播放。安卓与 iOS 端数据结构完全一致。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun CrashLogCard() {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var content by remember { mutableStateOf<String?>(null) }
+    var copied by remember { mutableStateOf(false) }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("崩溃日志", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "如果还有点播放闪退，这里会记下堆栈。点「复制」发给我就能直接定位。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { content = CrashLog.read() }) { Text("查看") }
+                OutlinedButton(onClick = {
+                    val t = CrashLog.read()
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(t.ifEmpty { "（暂无崩溃日志）" }))
+                    copied = true
+                }) { Text(if (copied) "已复制" else "复制") }
+                OutlinedButton(onClick = { CrashLog.clear() }) { Text("清空") }
+            }
+        }
+    }
+
+    content?.let { text ->
+        AlertDialog(
+            onDismissRequest = { content = null },
+            title = { Text("崩溃日志") },
+            text = {
+                Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text(
+                            text.ifEmpty { "（暂无崩溃日志）" },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { content = null }) { Text("关闭") } },
         )
     }
 }

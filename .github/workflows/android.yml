@@ -51,6 +51,13 @@ jobs:
           git commit -qm "ci log run $GITHUB_RUN_ID"
           git push -qf origin ci-logs
 
+      - name: Prepare Guangya-ready names
+        working-directory: android
+        run: |
+          V=${{ github.run_number }}
+          cp app/build/outputs/apk/debug/cloudtunes-phone-debug.apk app/build/outputs/apk/debug/cloudtunes-phone-1.0.$V.apk
+          cp tv/build/outputs/apk/debug/cloudtunes-tv-debug.apk tv/build/outputs/apk/debug/cloudtunes-tv-1.0.$V.apk
+
       - name: Upload APK to release
         uses: softprops/action-gh-release@v2
         with:
@@ -60,10 +67,13 @@ jobs:
             CloudTunes 安卓版 v1.0.${{ github.run_number }}（调试签名，直接安装即可，App 内「我的 → 版本更新」可自检升级）。
             - cloudtunes-phone-debug.apk：手机版（Android 8+）
             - cloudtunes-tv-debug.apk：TV 版（Android 7+，TV 桌面可直接启动）
+            - cloudtunes-phone-1.0.${{ github.run_number }}.apk / cloudtunes-tv-1.0.${{ github.run_number }}.apk：**带版本号的文件名**，下载后直接丢进光鸭云盘根目录（或 CloudTunes 文件夹），App 就会从光鸭检查更新，不受网络限制。
             对应提交：${{ github.sha }}
           files: |
             android/app/build/outputs/apk/debug/cloudtunes-phone-debug.apk
             android/tv/build/outputs/apk/debug/cloudtunes-tv-debug.apk
+            android/app/build/outputs/apk/debug/cloudtunes-phone-1.0.${{ github.run_number }}.apk
+            android/tv/build/outputs/apk/debug/cloudtunes-tv-1.0.${{ github.run_number }}.apk
 
       - name: Publish update manifest
         run: |

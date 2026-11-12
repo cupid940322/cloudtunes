@@ -36,8 +36,8 @@ fun UpdateDialogs() {
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            if (info.size > 0) "${(info.size / 1048576.0).let { "%.1f".format(it) }} MB · 直接覆盖安装，数据不丢"
-                            else "直接覆盖安装，数据不丢",
+                            (if (info.size > 0) "${(info.size / 1048576.0).let { "%.1f".format(it) }} MB · " else "") +
+                                "来源：${info.source} · 直接覆盖安装，数据不丢",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -134,24 +134,34 @@ fun UpdateCard() {
     val scope = rememberCoroutineScope()
     val state by UpdateCenter.state
     val checking = state is UpdateCenter.State.Checking
+    // 光鸭登录状态变了要重算这一行
+    val gyReady = UpdateCenter.guangyaReady()
 
     Card {
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("版本更新", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "当前版本 v${UpdateCenter.currentVersionName(context)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("版本更新", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "当前版本 v${UpdateCenter.currentVersionName(context)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Button(
+                    enabled = !checking,
+                    onClick = { scope.launch { UpdateCenter.check(context, force = true) } },
+                ) { Text(if (checking) "检查中…" else "检查更新") }
             }
-            Button(
-                enabled = !checking,
-                onClick = { scope.launch { UpdateCenter.check(context, force = true) } },
-            ) { Text(if (checking) "检查中…" else "检查更新") }
+            Text(
+                if (gyReady) "更新源：光鸭云盘优先（国内直连，不受网络限制），失败自动改走 GitHub"
+                else "更新源：GitHub（登录光鸭云盘后，可把安装包放进光鸭根目录或 CloudTunes 文件夹，改用国内直连）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

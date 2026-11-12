@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 播放时保持网络唤醒（ExoPlayer setWakeMode 需要，缺了会 SecurityException 闪退） -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 软件内更新：下载后调系统安装器（Android 8+ 需用户单独允许「安装未知应用」） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 

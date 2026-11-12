@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import com.gysbs.cloudtunes.core.CrashLog
 import com.gysbs.cloudtunes.core.CredentialStore
 import com.gysbs.cloudtunes.core.LibraryStore
 import com.gysbs.cloudtunes.core.SyncService
@@ -17,9 +18,15 @@ import com.gysbs.cloudtunes.ui.Theme.CloudTunesTheme
 class App : android.app.Application() {
     override fun onCreate() {
         super.onCreate()
-        CredentialStore.init(this)
-        LibraryStore.init(this)
-        SyncService.init(this)
+        // 最先装崩溃日志，后面任何初始化异常都能留下堆栈
+        CrashLog.install(this)
+        try {
+            CredentialStore.init(this)
+            LibraryStore.init(this)
+            SyncService.init(this)
+        } catch (t: Throwable) {
+            CrashLog.record("App 初始化", t)
+        }
     }
 }
 
@@ -33,8 +40,12 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        // 预启动播放服务（注册媒体会话）
-        startService(Intent(this, PlaybackService::class.java))
+        // 预启动播放服务（注册媒体会话）；个别 ROM 会拒绝后台起服务，失败也不该让 App 挂掉
+        try {
+            startService(Intent(this, PlaybackService::class.java))
+        } catch (t: Throwable) {
+            CrashLog.record("启动播放服务", t)
+        }
         setContent {
             CloudTunesTheme {
                 AppRoot()

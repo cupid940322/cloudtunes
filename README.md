@@ -130,6 +130,25 @@ Kotlin + Jetpack Compose + Media3，功能对齐 iOS 端：
 
 - 每次 CI 构建把 `run_number` 写进 `versionCode` / `versionName`（形如 `1.0.9`），APK 发布到 Releases
 - App 启动时静默检查一次（24 小时节流），发现新版本弹窗；「我的 → 版本更新」可手动检查
-- 应用内直接下载（带进度条，优先走 gh-proxy 加速，失败回退直连），下载完调系统安装器覆盖安装
+- 三条通道，按序尝试：
+  1. **光鸭云盘**（国内直连，不受网络限制）
+  2. 仓库里的 `update/android-latest.json`（gh-proxy / ghproxy / ghfast / jsDelivr / raw 六个镜像）
+  3. GitHub Releases API（最后兜底）
+- 应用内直接下载（带进度条），下载完调系统安装器覆盖安装
 - 首次安装更新时系统会要求允许「安装未知应用」，App 会自动跳到该设置页，允许后回到 App 再点「立即安装」
 - TV 版同样支持；若电视盒子的系统精简掉了安装器，会提示 APK 保存路径，可用文件管理器安装
+
+### 用光鸭云盘做更新源（不依赖 GitHub）
+
+GitHub 在手机网络下经常连不上，把安装包放进自己的光鸭云盘就彻底绕开了这个限制：
+
+1. 在 App「我的 → 光鸭云盘」登录（登录过一次即可，token 会刷新）
+2. 从 Releases 页下载带版本号的文件：`cloudtunes-phone-1.0.16.apk` / `cloudtunes-tv-1.0.16.apk`
+3. 把文件丢进光鸭云盘**根目录**，或根目录下名为 `CloudTunes` / `更新` / `update` 的文件夹
+4. 回到 App 点「版本更新 → 检查更新」，就会从光鸭取包并下载安装
+
+命名规则：`cloudtunes-phone-<版本>.apk`、`cloudtunes-tv-<版本>.apk`，版本号取最后一段数字与 `versionCode` 比较（`1.0.16` → 16）。文件名不对会被忽略，所以不会误装。
+
+### 崩溃日志
+
+「我的 → 崩溃日志」会记录闪退堆栈（保存在应用私有目录 `crash.log`），点「复制」即可发给开发者定位问题。

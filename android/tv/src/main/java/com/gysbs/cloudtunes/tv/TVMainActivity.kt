@@ -73,8 +73,12 @@ class TVMainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        startService(android.content.Intent(this, PlaybackService::class.java))
-        setContent { TVApp() }
+        // 预启动播放服务（注册媒体会话）；个别 ROM 拒绝时不影响界面
+        try {
+            startService(android.content.Intent(this, PlaybackService::class.java))
+        } catch (t: Throwable) {
+            com.gysbs.cloudtunes.core.CrashLog.record("TV 启动播放服务", t)
+        }        setContent { TVApp() }
     }
 }
 
