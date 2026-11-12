@@ -22,13 +22,13 @@
       "size": 4300546,
       "versions": [
         {
-          "version": "1.43",
-          "date": "2026-11-12T06:01:00Z",
-          "downloadURL": "https://gh-proxy.com/https://github.com/cupid940322/cloudtunes/releases/download/app-latest/CloudTunes-1.43-94.ipa",
+          "version": "1.44",
+          "date": "2026-11-12T07:57:44Z",
+          "downloadURL": "https://gh-proxy.com/https://github.com/cupid940322/cloudtunes/releases/download/app-latest/CloudTunes-1.44-95.ipa",
           "size": 4300546,
           "minOSVersion": "16.0",
-          "localizedDescription": "版本 1.43（构建 94），由 CI 自动发布。",
-          "buildVersion": "94"
+          "localizedDescription": "版本 1.44（构建 95），由 CI 自动发布。",
+          "buildVersion": "95"
         }
       ]
     }
