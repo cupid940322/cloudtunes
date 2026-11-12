@@ -1,0 +1,43 @@
+name: Android Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-android-${{ github.run_number }}
+          name: 安卓版 build ${{ github.run_number }}
+          body: |
+            CloudTunes 安卓版 APK（调试签名，直接安装即可）。
+            对应 iOS 端提交：${{ github.sha }}
+          files: android/app/build/outputs/apk/debug/app-debug.apk
