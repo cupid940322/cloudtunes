@@ -105,3 +105,15 @@ CloudTunes/
 - 夸克接口为社区逆向，失效需跟进更新
 - 音乐库元数据存 `Documents/libraries.json`，曲目上千时首次加载略慢
 - 同步令牌是 long-lived 凭证，只勾了 `gist` 权限；一旦泄露去 GitHub 吊销即可
+
+## 安卓版（`android/`）
+
+Kotlin + Jetpack Compose + Media3，功能对齐 iOS 端：
+
+- 三大网盘：光鸭云盘（短信登录）/ 百度网盘（开放平台 OAuth）/ 夸克网盘（Cookie 导入，`__puus` 自动刷新）
+- 音乐库扫描 + 三源刮削（网易云/QQ音乐/iTunes 打分匹配）+ LRC 歌词高亮
+- 播放：ExoPlayer，夸克直链带 Cookie + Referer + 客户端 UA 三件套；失败自动切下一首；通知栏/锁屏媒体控件
+- **Gist 同步与 iOS 端完全互通**：同一 GitHub Token，音乐库/收藏/播放记录/继续播放三端共享
+- CI：push 到 main 触发 `android.yml`，自动出 APK 发到 Releases（tag `app-android-*`），国内可用 gh-proxy 加速下载
+
+最低要求 Android 8.0（API 26），调试签名 APK，安装时需允许「未知来源应用」。
