@@ -30,7 +30,15 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee build_output.log
+
+      - name: Errors to summary
+        if: failure()
+        working-directory: android
+        run: |
+          grep -E "^e: |error: |Caused by|What went wrong" -A1 build_output.log | head -120 >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload APK to release
         uses: softprops/action-gh-release@v2
