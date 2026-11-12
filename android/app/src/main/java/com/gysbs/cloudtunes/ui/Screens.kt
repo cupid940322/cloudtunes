@@ -417,8 +417,8 @@ fun FavoritesTab() {
     val all = remember(favs) { favs.mapNotNull { LibraryStore.findTrack(it) } }
 
     Column(Modifier.fillMaxSize()) {
-        Text("收藏", style = MaterialTheme.typography.headlineMedium,
-            Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+        Text("收藏", Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            style = MaterialTheme.typography.headlineMedium)
         if (all.isEmpty()) {
             Text("还没有收藏。播放页点☆收藏，或列表里的红心。",
                 Modifier.padding(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
