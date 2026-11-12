@@ -40,6 +40,17 @@ jobs:
         run: |
           grep -E "^e: |error: |Caused by|What went wrong" -A1 build_output.log | head -120 >> "$GITHUB_STEP_SUMMARY" || true
 
+      - name: Push log to ci-logs branch
+        if: failure()
+        run: |
+          git config user.email "ci-log@example.com"
+          git config user.name "ci-log"
+          git checkout -q --orphan ci-logs
+          git rm -rq --cached . 2>/dev/null || true
+          git add -f android/build_output.log
+          git commit -qm "ci log run $GITHUB_RUN_ID"
+          git push -qf origin ci-logs
+
       - name: Upload APK to release
         uses: softprops/action-gh-release@v2
         with:
