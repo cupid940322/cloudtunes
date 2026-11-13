@@ -680,9 +680,10 @@ class PlaybackService : MediaSessionService() {
             // 关键：自连一个 controller，让 MediaSessionService 真正"认领"这个会话，
             // 否则 media3 不会接管通知（锁屏/通知栏永远没有媒体控件）
             try {
-                selfController = androidx.media3.session.MediaController
-                    .Builder(this, mediaSession!!.sessionToken)
-                    .buildAsync()
+                selfController = androidx.media3.session.MediaController.Builder(
+                    this,
+                    androidx.media3.session.SessionToken(this, PlaybackService::class.java),
+                ).buildAsync()
             } catch (t: Throwable) {
                 CrashLog.record("连接媒体控制器", t)
             }
