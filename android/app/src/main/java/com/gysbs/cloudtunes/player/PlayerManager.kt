@@ -682,7 +682,10 @@ class PlaybackService : MediaSessionService() {
             try {
                 selfController = androidx.media3.session.MediaController.Builder(
                     this,
-                    androidx.media3.session.SessionToken(this, PlaybackService::class.java),
+                    androidx.media3.session.SessionToken(
+                        this,
+                        android.content.ComponentName(this, PlaybackService::class.java),
+                    ),
                 ).buildAsync()
             } catch (t: Throwable) {
                 CrashLog.record("连接媒体控制器", t)
