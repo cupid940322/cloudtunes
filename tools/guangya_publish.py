@@ -7,6 +7,7 @@
   python guangya_publish.py sendcode +8613800138000   # 第 1 步：发短信验证码
   python guangya_publish.py verify 123456             # 第 2 步：输入验证码完成登录（token 存本地）
   python guangya_publish.py ls                        # 列根目录
+  python guangya_publish.py prune                     # 手动清理：同系列只留最新一版
   python guangya_publish.py upload a.apk b.apk        # 上传到「CloudTunes」文件夹（没有会自动创建）
   python guangya_publish.py url <fileId>              # 取某个文件的下载直链（验证用）
 
@@ -247,6 +248,51 @@ def cmd_ls(parent_id=""):
         print("%s %-12s %s" % (kind, item.get("fileId"), item.get("fileName")))
 
 
+def delete_files(state, file_ids):
+    """删除文件（异步任务，服务端返回 taskId）"""
+    if not file_ids:
+        return None
+    return api_post(state, "/nd.bizuserres.s/v1/file/delete_file", {"fileIds": list(file_ids)})
+
+
+def version_key(name):
+    m = re.search(r"-(\d+(?:\.\d+)*)\.apk$", name or "")
+    if not m:
+        return None
+    return tuple(int(x) for x in m.group(1).split("."))
+
+
+def prune_old(state, folder_id, dry_run=False, keep_latest=1):
+    """同系列安装包只保留版本号最高的 keep_latest 个，其余删除。
+
+    云盘里堆着每个历史版本会让「该装哪个」变难，也浪费空间；
+    每次发布新包后自动清掉旧包（GitHub release 里仍保留全部历史版本可回溯）。
+    """
+    items = list_dir(state, folder_id)
+    groups = {}
+    for it in items:
+        if it.get("resType") == 2:          # 文件夹跳过
+            continue
+        name = it.get("fileName") or ""
+        key = version_key(name)
+        if key is None:                      # 不是带版本号的 apk，不动
+            continue
+        prefix = re.sub(r"-\d+(?:\.\d+)*\.apk$", "", name)
+        groups.setdefault(prefix, []).append((key, name, it.get("fileId")))
+
+    removed = []
+    for prefix, entries in groups.items():
+        entries.sort(key=lambda e: e[0], reverse=True)
+        for _, name, fid in entries[keep_latest:]:
+            if dry_run:
+                print("  将删除 %s" % name)
+            else:
+                delete_files(state, [fid])
+                print("  已删除旧版本 %s" % name)
+            removed.append(name)
+    return removed
+
+
 def ensure_folder(state, name):
     for item in list_dir(state, ""):
         if item.get("resType") == 2 and item.get("fileName") == name:
@@ -345,6 +391,11 @@ def cmd_upload(files):
         fid = poll_task(state, task_id)
         print("  完成：fileId=%s" % fid)
 
+    # 上传完顺手清掉同系列的旧包：云盘里只留最新一版，避免「该装哪个」的困扰
+    removed = prune_old(state, folder_id)
+    if removed:
+        print("已清理 %d 个旧版本" % len(removed))
+
 
 def cmd_url(file_id):
     state = ensure_state()
@@ -366,6 +417,11 @@ def main():
         cmd_ls(sys.argv[2] if len(sys.argv) > 2 else "")
     elif cmd == "upload":
         cmd_upload(sys.argv[2:])
+    elif cmd == "prune":
+        state = ensure_state()
+        fid = ensure_folder(state, UPDATE_FOLDER)
+        removed = prune_old(state, fid, dry_run=("--dry-run" in sys.argv))
+        print("清理完成，共 %d 个旧版本" % len(removed))
     elif cmd == "url":
         cmd_url(sys.argv[2])
     else:
