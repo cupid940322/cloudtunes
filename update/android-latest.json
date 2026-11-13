@@ -1,9 +1,9 @@
 {
-  "versionCode": 35,
-  "versionName": "1.0.35",
-  "tag": "app-android-35",
-  "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-35/cloudtunes-phone-debug.apk",
-  "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-35/cloudtunes-tv-debug.apk",
-  "notes": "CloudTunes 安卓版 v1.0.35",
-  "publishedAt": "2026-11-13T20:53:42+08:00"
+  "versionCode": 36,
+  "versionName": "1.0.36",
+  "tag": "app-android-36",
+  "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-36/cloudtunes-phone-debug.apk",
+  "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-36/cloudtunes-tv-debug.apk",
+  "notes": "CloudTunes 安卓版 v1.0.36",
+  "publishedAt": "2026-11-13T22:12:17+08:00"
 }
