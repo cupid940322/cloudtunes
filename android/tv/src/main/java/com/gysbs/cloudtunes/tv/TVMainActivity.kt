@@ -357,10 +357,13 @@ fun TVPlayerScreen(onClose: () -> Unit) {
     val artwork = LibraryStore.findTrack(track.id)?.second?.artworkURL
     val isFav = LibraryStore.isFavorite(track.id)
 
-    // ── 控制区自动隐藏：5 秒无操作后只留封面和歌词，按遥控器任意方向键/OK 唤醒 ──
+    // ── 控制区自动隐藏：5 秒无操作后只留封面和歌词，按遥控器任意键立刻恢复正常播放页 ──
     var controlsVisible by remember { mutableStateOf(true) }
     var idleTick by remember { mutableIntStateOf(0) }
     val playFocus = remember { FocusRequester() }
+    // 全部控件隐藏后界面上没有可聚焦元素，遥控器按键会直接丢掉，
+    // 所以藏起来时放一个全屏透明焦点锚点接管焦点，保证「按任意键」一定能被收到
+    val idleAnchor = remember { FocusRequester() }
 
     LaunchedEffect(idleTick, track.id) {
         controlsVisible = true
@@ -373,12 +376,10 @@ fun TVPlayerScreen(onClose: () -> Unit) {
         label = "tvControls",
     )
     val showControls = controlsAlpha > 0.02f
-    // 控制区重新出现（或切歌）时把焦点还给播放键
-    LaunchedEffect(controlsVisible, track.id) {
-        if (controlsVisible) {
-            delay(80)
-            runCatching { playFocus.requestFocus() }
-        }
+    // 控制区重新出现（或切歌）时把焦点还给播放键；隐藏完成时焦点交给锚点
+    LaunchedEffect(showControls, track.id) {
+        delay(120)
+        runCatching { if (showControls) playFocus.requestFocus() else idleAnchor.requestFocus() }
     }
 
     Box(
@@ -386,19 +387,18 @@ fun TVPlayerScreen(onClose: () -> Unit) {
             .fillMaxSize()
             .background(Color(0xFF0A0B12))
             .onPreviewKeyEvent { e ->
-                if (e.type == KeyEventType.KeyDown) {
-                    val nav = e.key == Key.DirectionCenter || e.key == Key.Enter ||
-                        e.key == Key.DirectionLeft || e.key == Key.DirectionRight ||
-                        e.key == Key.DirectionUp || e.key == Key.DirectionDown
-                    if (!controlsVisible && nav) {
-                        // 隐藏状态下第一下按键只负责唤出控制区，不触发动作
-                        idleTick++
-                        true
-                    } else {
-                        idleTick++ // 任意按键重置计时
-                        false
-                    }
-                } else false
+                if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val nav = e.key == Key.DirectionCenter || e.key == Key.Enter ||
+                    e.key == Key.DirectionLeft || e.key == Key.DirectionRight ||
+                    e.key == Key.DirectionUp || e.key == Key.DirectionDown
+                if (!showControls) {
+                    // 沉浸状态：任意方向键/OK 都立刻恢复正常播放页（这一下只负责唤出，不触发动作）
+                    idleTick++
+                    nav
+                } else {
+                    idleTick++ // 任意按键重置计时
+                    false
+                }
             }
     ) {
         // 沉浸背景：当前封面放大压暗（老系统不支持模糊也能正常显示）
@@ -567,6 +567,16 @@ fun TVPlayerScreen(onClose: () -> Unit) {
                     }
                 }
             }
+        }
+
+        // 沉浸状态下的透明焦点锚点：保证遥控器按键始终有接收者
+        if (!showControls) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .focusRequester(idleAnchor)
+                    .focusable()
+            )
         }
     }
 
