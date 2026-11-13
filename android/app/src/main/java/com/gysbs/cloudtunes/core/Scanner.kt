@@ -155,13 +155,18 @@ object Scanner {
             if (!isSep(chars[i])) { i++; continue }
             var j = i
             while (j + 1 < chars.size && isSep(chars[j + 1])) j++
+            val runLen = j - i + 1
             val left = String(chars, 0, i).trim()
             val right = String(chars, j + 1, chars.size - j - 1).trim()
             i = j + 1
             if (left.isEmpty() || right.isEmpty()) continue
             if (!left.containsCJK() && !right.containsCJK()) continue
             if (left.length > 30 || right.length > 60) continue
-            return left to right
+            // 连续双分隔符（-- / ——）且无空格，几乎都是「歌名--歌手」倒序命名
+            // ——「歌手 - 歌名」的习惯写法是单个 - 且两侧带空格（上面带空格分支已处理）。
+            // 此时交换方向：左=歌名、右=歌手。实测《民谣啊民谣》整张专辑
+            // 24 首全部如此（理想三旬--陈鸿宇 / 十点半的地铁--刘锦泽 / …）。
+            return if (runLen >= 2) right to left else left to right
         }
         return null
     }

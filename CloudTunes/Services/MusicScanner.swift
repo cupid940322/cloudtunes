@@ -210,6 +210,7 @@ enum MusicScanner {
             guard isSep(chars[i]) else { i += 1; continue }
             var j = i
             while j + 1 < chars.count, isSep(chars[j + 1]) { j += 1 }
+            let runLen = j - i + 1
             let left = String(chars[0..<i]).trimmingCharacters(in: .whitespaces)
             let right = String(chars[(j + 1)...]).trimmingCharacters(in: .whitespaces)
             i = j + 1
@@ -217,7 +218,11 @@ enum MusicScanner {
             let hasCJK = left.containsCJK || right.containsCJK
             guard hasCJK else { continue }
             guard left.count <= 30, right.count <= 60 else { continue }
-            return (left, right)
+            // 连续双分隔符（-- / ——）且无空格，几乎都是「歌名--歌手」倒序命名
+            // ——「歌手 - 歌名」的习惯写法是单个 - 且两侧带空格（上面带空格分支已处理）。
+            // 此时交换方向：左=歌名、右=歌手。实测《民谣啊民谣》整张专辑
+            // 24 首全部如此（理想三旬--陈鸿宇 / 十点半的地铁--刘锦泽 / …）。
+            return runLen >= 2 ? (right, left) : (left, right)
         }
         return nil
     }
