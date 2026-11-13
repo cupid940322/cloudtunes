@@ -219,5 +219,22 @@ jobs:
             echo "无需提交"
           else
             git commit -m "chore(release): 发布 ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})，版本号自动递增至 $NEXT [skip ci]"
-            git push
+
+            # Android 构建与 iOS 构建同时被 push 触发，两边都会往 main 提交
+            # （android.yml 写 update/*.json，这里写 repo.json + VERSION）。
+            # 直接 push 会 non-fast-forward 失败（2026-11-13 的 build 131 就是这样丢的）。
+            # 所以先 rebase 再推，失败则重试；两者改的文件不重叠，基本不会真冲突。
+            for attempt in 1 2 3; do
+              if git pull --rebase --autostash origin main && git push; then
+                echo "发布提交已推送（第 $attempt 次尝试）"
+                break
+              fi
+              echo "第 $attempt 次推送失败，回退 rebase 后重试"
+              git rebase --abort 2>/dev/null || true
+              sleep 5
+              if [ "$attempt" = "3" ]; then
+                echo "::error::repo.json / VERSION 推送连续 3 次失败，需手动补提交"
+                exit 1
+              fi
+            done
           fi
