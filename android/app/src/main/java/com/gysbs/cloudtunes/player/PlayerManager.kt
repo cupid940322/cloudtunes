@@ -24,6 +24,7 @@ import com.gysbs.cloudtunes.core.LibraryStore
 import com.gysbs.cloudtunes.core.LibraryTrack
 import com.gysbs.cloudtunes.core.LyricLine
 import com.gysbs.cloudtunes.core.Lyrics
+import com.gysbs.cloudtunes.core.LyricsCache
 import com.gysbs.cloudtunes.core.PlaybackSession
 import com.gysbs.cloudtunes.core.QuarkProvider
 import com.gysbs.cloudtunes.core.Track

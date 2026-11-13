@@ -189,12 +189,23 @@ object LyricSources {
         if (q.isEmpty()) return emptyList()
         return withTimeoutOrNull(timeoutMs) {
             coroutineScope {
-                val netease = async { runCatching { Scraper.neteaseSearch(q, limit = 8) }.getOrDefault(emptyList()) }
+                val netease = async {
+                    runCatching { Scraper.neteaseSearch(q, limit = 8) }.getOrDefault(emptyList())
+                        .map { s ->
+                            Candidate(
+                                source = "网易云",
+                                title = s.title ?: "",
+                                artist = s.artist ?: "",
+                                album = s.album,
+                                neteaseID = s.neteaseID,
+                            )
+                        }
+                }
                 val qq = async { runCatching { qqSearch(q, limit = 8) }.getOrDefault(emptyList()) }
                 val kugou = async { runCatching { kugouSearch(q) }.getOrDefault(emptyList()) }
                 val lrclib = async { runCatching { lrclibSearch(q, null) }.getOrDefault(emptyList()) }
-                val merged = netease.await() + qq.await() + kugou.await() + lrclib.await()
-                merged.sortedBy { sourceOrder.indexOf(it.source).let { o -> if (o < 0) 99 else o } }
+                val merged: List<Candidate> = netease.await() + qq.await() + kugou.await() + lrclib.await()
+                merged.sortedBy { c -> sourceOrder.indexOf(c.source).let { o -> if (o < 0) 99 else o } }
             }
         } ?: emptyList()
     }
