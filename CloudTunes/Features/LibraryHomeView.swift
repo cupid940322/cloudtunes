@@ -533,8 +533,11 @@ struct LibraryDetailView: View {
                         Task { await store.rescan(libraryID: libraryID) }
                     } label: { Label("扫描新文件", systemImage: "arrow.clockwise") }
                     Button {
+                        Task { await store.onlineFixPass(libraryID: libraryID) }
+                    } label: { Label("重新识别（修正歌名/歌手）", systemImage: "text.magnifyingglass") }
+                    Button {
                         confirmRescrape = true
-                    } label: { Label("重新刮削全部（修正错误）", systemImage: "wand.and.stars") }
+                    } label: { Label("重新刮削全部（连封面一起）", systemImage: "wand.and.stars") }
                     Divider()
                     Button(role: .destructive) {
                         store.removeLibrary(id: libraryID)

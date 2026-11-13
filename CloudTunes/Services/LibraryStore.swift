@@ -587,9 +587,80 @@ final class LibraryStore: ObservableObject {
             }
         }
         save()
+
+        // 纯在线修正先跑一轮：只靠文件名解析 + 搜索 API 把歌名/歌手摆正，
+        // 完全不碰文件直链。WAV 分轨这类无标签文件如果直链读取失败（限流/超时），
+        // 后面的 scrapeAll 只会把错误的文件名解析固化下来——文字元数据必须先正确。
+        await onlineFixPass(libraryID: libraryID)
+
         await scrapeAll(libraryID: libraryID, providerKind: lib.providerKind)
         progress[libraryID] = nil
         SyncService.shared.scheduleSync(reason: "重新刮削完成")
+    }
+
+    /// 纯在线识别：不取文件直链、不读内嵌标签，只靠文件名重新解析 + 搜索 API
+    /// 修正歌名/歌手（两方向匹配在 MusicSearchService.bestMatch 里）。
+    /// 用于「歌名--歌手」倒序命名、以及直链读取失败导致错误被固化的场景。
+    /// 手动改过（metaSource=manual）的曲目不动；封面/时长等仍由后续完整刮削补齐。
+    func onlineFixPass(libraryID: String) async {
+        guard let lib = library(id: libraryID) else { return }
+        progress[libraryID] = ScanProgress(phase: "在线识别修正…")
+        let targets = lib.tracks.filter { $0.metaSource != "manual" }
+        progress[libraryID]?.totalToScrape = targets.count
+        var done = 0
+        let batchSize = 4
+        var cursor = 0
+        while cursor < targets.count {
+            let batch = Array(targets[cursor..<min(cursor + batchSize, targets.count)])
+            // 目录提示在主线程先算好，别在并发任务里再回头读 self
+            let batchHints = batch.map { scrapeHints(for: $0) }
+            let fixed: [(String, SongInfo, Double)] = await withTaskGroup(
+                of: (String, SongInfo?, Double).self) { group in
+                for (i, t) in batch.enumerated() {
+                    let hint = batchHints[i]
+                    group.addTask {
+                        // 匹配输入用文件名重新解析：库里可能存着旧解析的错位结果
+                        let parsed = MusicScanner.parse(t.fileName)
+                        let title = parsed.title.isEmpty ? t.title : parsed.title
+                        let artist = parsed.artist ?? hint.artist ?? t.artist
+                        guard !title.isEmpty else { return (t.id, nil, 0) }
+                        let m = await MusicSearchService.bestMatch(title: title,
+                                                                   artist: artist,
+                                                                   artistHint: hint.artist)
+                        return (t.id, m?.info, m?.score ?? 0)
+                    }
+                }
+                var out: [(String, SongInfo?, Double)] = []
+                for await r in group { out.append(r) }
+                return out.compactMap { id, info, score in
+                    info.map { (id, $0, score) }
+                }
+            }
+
+            if let li = libraries.firstIndex(where: { $0.id == libraryID }) {
+                var tracks = libraries[li].tracks
+                for (id, info, score) in fixed {
+                    guard let ti = tracks.firstIndex(where: { $0.id == id }) else { continue }
+                    if let v = info.title, !v.isEmpty { tracks[ti].title = v }
+                    if let v = info.artist, !v.isEmpty { tracks[ti].artist = v }
+                    if let v = info.album, !v.isEmpty { tracks[ti].album = v }
+                    if let v = info.duration { tracks[ti].duration = v }
+                    if let v = info.neteaseID { tracks[ti].neteaseID = v }
+                    tracks[ti].confidence = score
+                    tracks[ti].metaSource = "online"
+                    // scraped 保持 false：让后面的完整刮削继续补封面/内嵌标签
+                    tracks[ti].updatedAt = Date()
+                }
+                libraries[li].tracks = tracks
+            }
+            done += fixed.count
+            progress[libraryID]?.scrapedTracks = done
+            if let total = progress[libraryID]?.totalToScrape {
+                progress[libraryID]?.phase = "在线识别 \(done)/\(total)"
+            }
+            cursor += batchSize
+        }
+        save()
     }
 
     /// 只补缺失：不动已有的歌名/歌手，只处理和在线补齐「没封面 / 没专辑 / 之前只有文件名」的歌。
@@ -627,7 +698,29 @@ final class LibraryStore: ObservableObject {
               let provider = ProviderRegistry.provider(kind: lib.providerKind) else { return }
         let file = CloudFile(id: item.fileID, name: item.fileName, size: item.size,
                              isFolder: false, modifiedAt: nil, extra: ["parentID": item.parentID])
-        guard let link = try? await provider.streamURL(file: file) else { return }
+        guard let link = try? await provider.streamURL(file: file) else {
+            // 直链失败也要做纯在线修正：只靠文件名解析 + 搜索 API。
+            // 原来直接 return，错误元数据原地不动，用户点「重新刮削这首」毫无效果
+            let parsed = MusicScanner.parse(item.fileName)
+            let title = parsed.title.isEmpty ? item.title : parsed.title
+            let artist = parsed.artist ?? hint.artist ?? item.artist
+            guard !title.isEmpty,
+                  let m = await MusicSearchService.bestMatch(title: title, artist: artist,
+                                                             artistHint: hint.artist) else { return }
+            updateTrack(libraryID: libraryID, trackID: trackID) { t in
+                if let v = m.info.title, !v.isEmpty { t.title = v }
+                if let v = m.info.artist, !v.isEmpty { t.artist = v }
+                if let v = m.info.album, !v.isEmpty { t.album = v }
+                if let v = m.info.duration { t.duration = v }
+                if let v = m.info.neteaseID { t.neteaseID = v }
+                t.artworkURL = m.info.coverURL ?? t.artworkURL
+                t.confidence = m.score
+                t.metaSource = "online"
+                t.scraped = true
+            }
+            save()
+            return
+        }
         let hint = scrapeHints(for: item)
         // 匹配输入用文件名重新解析的结果：库里可能存着旧版本解析出的「-陈鸿宇」
         // 这类残渣，拿残渣去搜永远搜不对；文件名才是干净的原始信息
