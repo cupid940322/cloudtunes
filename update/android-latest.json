@@ -1,9 +1,9 @@
 {
-  "versionCode": 22,
-  "versionName": "1.0.22",
-  "tag": "app-android-22",
-  "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-22/cloudtunes-phone-debug.apk",
-  "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-22/cloudtunes-tv-debug.apk",
-  "notes": "CloudTunes 安卓版 v1.0.22",
-  "publishedAt": "2026-11-13T10:43:51+08:00"
+  "versionCode": 23,
+  "versionName": "1.0.23",
+  "tag": "app-android-23",
+  "apkPhone": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-23/cloudtunes-phone-debug.apk",
+  "apkTv": "https://github.com/cupid940322/cloudtunes/releases/download/app-android-23/cloudtunes-tv-debug.apk",
+  "notes": "CloudTunes 安卓版 v1.0.23",
+  "publishedAt": "2026-11-13T11:13:22+08:00"
 }
