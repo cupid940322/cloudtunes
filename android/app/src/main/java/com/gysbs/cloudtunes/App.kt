@@ -57,7 +57,11 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             CloudTunesTheme {
-                AppRoot()
+                // 通知权限引导叠在最上层：没有通知权限时锁屏/通知栏不会出现播放控件
+                androidx.compose.foundation.layout.Box {
+                    AppRoot()
+                    com.gysbs.cloudtunes.ui.NotificationPermissionGate()
+                }
             }
         }
     }

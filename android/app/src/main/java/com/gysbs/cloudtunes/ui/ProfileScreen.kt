@@ -17,6 +17,7 @@ import com.gysbs.cloudtunes.core.GitHubAccount
 import com.gysbs.cloudtunes.core.GuangyaProvider
 import com.gysbs.cloudtunes.core.QuarkProvider
 import com.gysbs.cloudtunes.core.SyncService
+import com.gysbs.cloudtunes.player.PlaybackService
 import kotlinx.coroutines.launch
 
 @Composable
@@ -29,6 +30,8 @@ fun ProfileTab() {
         SyncStatusLine()
 
         UpdateCard()
+
+        LockScreenPlayerCard()
 
         CrashLogCard()
 
@@ -107,6 +110,83 @@ private fun CrashLogCard() {
                 }
             },
             confirmButton = { TextButton(onClick = { content = null }) { Text("关闭") } },
+        )
+    }
+}
+
+/// 锁屏播放器自诊断：通知权限 / 通知渠道 / 播放服务 / 媒体通知 四环逐项显示，
+/// 哪一环不通一眼就能看出来；配两个跳转按钮（通知设置、电池优化白名单）。
+@Composable
+private fun LockScreenPlayerCard() {
+    val context = LocalContext.current
+    var tick by remember { mutableStateOf(0) }
+    val nm = context.getSystemService(android.app.NotificationManager::class.java)
+
+    // tick 变化时重新读实时状态（播放/暂停后再点「刷新」就能看到变化）
+    val notificationsEnabled = remember(tick) { nm?.areNotificationsEnabled() ?: false }
+    val channel = remember(tick) { nm?.getNotificationChannel(PlaybackService.CHANNEL_ID) }
+    val channelBlocked = channel?.importance == android.app.NotificationManager.IMPORTANCE_NONE
+    val mediaNotifVisible = remember(tick) {
+        try {
+            nm?.activeNotifications?.any { it.id == PlaybackService.NOTIFICATION_ID } ?: false
+        } catch (t: Throwable) { false }
+    }
+    val serviceRunning = PlaybackService.running
+    val sessionActive = PlaybackService.sessionActive
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("锁屏播放器", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { tick++ }) { Text("刷新") }
+            }
+            Text(
+                "锁屏和通知栏的播放控件依赖下面四项，任何一项不通都不会显示。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            DiagLine("通知权限", notificationsEnabled, "已允许", "未允许（锁屏控件必然不显示）")
+            DiagLine(
+                "通知渠道",
+                channel != null && !channelBlocked,
+                "正常",
+                if (channel == null) "未创建" else "已被关闭",
+            )
+            DiagLine("播放服务", serviceRunning, "运行中", "未运行")
+            DiagLine("媒体会话", sessionActive, "已建立", "未建立")
+            DiagLine("媒体通知", mediaNotifVisible, "已在通知栏", "未出现（正在播放时检查才有意义）")
+
+            if (!notificationsEnabled || channelBlocked) {
+                Text(
+                    "「未允许 / 已被关闭」需要在系统设置里打开通知，否则媒体控件不会出现在锁屏上。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            } else if (mediaNotifVisible) {
+                Text(
+                    "通知已生成但锁屏看不到，通常是系统「锁屏通知」开关被关：设置 → 通知 → 汤圆云音盒 → 允许锁屏显示。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { openNotificationSettings(context) }) { Text("通知设置") }
+                OutlinedButton(onClick = { requestIgnoreBatteryOptimization(context) }) { Text("忽略电池优化") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagLine(label: String, ok: Boolean, okText: String, badText: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("$label：", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            if (ok) okText else badText,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
         )
     }
 }

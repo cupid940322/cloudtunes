@@ -273,7 +273,8 @@ object PlayerManager {
     /// 拉起前台媒体服务（幂等：服务活着就不重复起）。
     /// 只在 UI 主动播放的路径调用（此时 App 在前台，startService 不会被系统拒）。
     private fun ensurePlaybackService() {
-        if (PlaybackService.running) return
+        // 服务活着且会话健在就不用重起；只剩服务在（会话建失败过）也再发一次 startService 触发补建
+        if (PlaybackService.running && PlaybackService.sessionActive) return
         if (!::appContext.isInitialized) return
         try {
             appContext.startService(android.content.Intent(appContext, PlaybackService::class.java))
@@ -494,36 +495,115 @@ class PlaybackService : MediaSessionService() {
         /// 服务是否在跑（给 PlayerManager.ensurePlaybackService 做幂等判断）
         @Volatile
         var running: Boolean = false
+
+        /// 媒体会话是否建好（自诊断用）
+        @Volatile
+        var sessionActive: Boolean = false
+
+        /// 通知渠道 / 通知 ID：自己建渠道，避免媒体通知被 ROM 默认塞进低优先级而锁屏不显示
+        const val CHANNEL_ID = "cloudtunes.playback"
+        const val NOTIFICATION_ID = 1001
     }
 
     private var mediaSession: MediaSession? = null
 
+    /// 渠道只建一次；IMPORTANCE_LOW（不出声、不弹横幅）但明确允许锁屏显示
+    private fun ensureChannel() {
+        try {
+            val nm = getSystemService(android.app.NotificationManager::class.java) ?: return
+            if (nm.getNotificationChannel(CHANNEL_ID) != null) return
+            val ch = android.app.NotificationChannel(
+                CHANNEL_ID,
+                "播放控制",
+                android.app.NotificationManager.IMPORTANCE_LOW,
+            )
+            ch.description = "锁屏 / 通知栏的播放控制"
+            ch.lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            ch.setShowBadge(false)
+            ch.enableVibration(false)
+            ch.setSound(null, null)
+            nm.createNotificationChannel(ch)
+        } catch (t: Throwable) {
+            CrashLog.record("创建播放通知渠道", t)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         running = true
+        ensureChannel()
+        // 指定渠道和固定通知 ID，确保通知进我们自己的可见渠道
+        try {
+            val provider = androidx.media3.session.DefaultMediaNotificationProvider.Builder(this)
+                .setChannelId(CHANNEL_ID)
+                .setNotificationId(NOTIFICATION_ID)
+                .build()
+            setMediaNotificationProvider(provider)
+        } catch (t: Throwable) {
+            // 配置失败退回 media3 默认 provider，通知仍有可能出现
+            CrashLog.record("配置媒体通知渠道", t)
+        }
+        buildSessionIfNeeded()
+    }
+
+    /// 建媒体会话；失败过就留着下次 onStartCommand 重试（比如 player 当时还没就绪）
+    private fun buildSessionIfNeeded() {
+        if (mediaSession != null) return
         try {
             PlayerManager.attach(this)
             val p = PlayerManager.player
-            if (p != null) {
-                // 点锁屏/通知栏的媒体卡片直接回到 App
-                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                val activityPi = launchIntent?.let {
-                    android.app.PendingIntent.getActivity(
-                        this, 0, it,
-                        android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
-                    )
-                }
-                val builder = MediaSession.Builder(this, p)
-                activityPi?.let { builder.setSessionActivity(it) }
-                mediaSession = builder.build()
+            if (p == null) {
+                CrashLog.record("播放服务", "attach 后 player 为空，媒体会话无法创建")
+                return
             }
+            // 点锁屏/通知栏的媒体卡片直接回到 App
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            val activityPi = launchIntent?.let {
+                android.app.PendingIntent.getActivity(
+                    this, 0, it,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+                )
+            }
+            val builder = MediaSession.Builder(this, p)
+            activityPi?.let { builder.setSessionActivity(it) }
+            mediaSession = builder.build()
+            sessionActive = mediaSession != null
+            CrashLog.record("播放服务", "媒体会话就绪 sessionActive=$sessionActive")
         } catch (t: Throwable) {
             // 媒体会话建不起来只是没有通知栏控件，绝不能让 App 起不来
             CrashLog.record("PlaybackService 初始化", t)
         }
     }
 
+    override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
+        // 服务被重新拉起（或上次会话没建成）时补建会话，然后交给 media3 正常处理
+        buildSessionIfNeeded()
+        return try {
+            super.onStartCommand(intent, flags, startId)
+        } catch (t: Throwable) {
+            CrashLog.record("播放服务 onStartCommand", t)
+            START_STICKY
+        }
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+
+    /// media3 在「该进前台了」时会走这里；记一条日志便于从「我的 → 崩溃日志」判断卡在哪一环
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        try {
+            if (startInForegroundRequired) {
+                val p = session.player
+                CrashLog.record(
+                    "媒体通知",
+                    "请求前台通知 playing=${p.isPlaying} playWhenReady=${p.playWhenReady} " +
+                        "state=${p.playbackState} items=${p.mediaItemCount}",
+                )
+            }
+        } catch (t: Throwable) {
+            CrashLog.record("媒体通知日志", t)
+        }
+        super.onUpdateNotification(session, startInForegroundRequired)
+    }
 
     override fun onTaskRemoved(rootIntent: android.content.Intent?) {
         try {
@@ -546,6 +626,7 @@ class PlaybackService : MediaSessionService() {
         // 注意：不 release ExoPlayer、也不把 PlayerManager.player 置空。
         // 服务被系统回收时界面还在用播放器，置空会让「继续播放」变成点了没反应。
         running = false
+        sessionActive = false
         super.onDestroy()
     }
 }
