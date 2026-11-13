@@ -120,6 +120,7 @@ fun HomeTab(openLibrary: (String) -> Unit) {
     val session by LibraryStore.session
     val progress = LibraryStore.scanProgress
     var addDialog by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<MusicLibrary?>(null) }
     val scope = rememberCoroutineScope()
 
     Box(Modifier.fillMaxSize()) {
@@ -219,10 +220,23 @@ fun HomeTab(openLibrary: (String) -> Unit) {
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        IconButton(onClick = {
-                            scope.launch { LibraryStore.rescanLibrary(lib.id) }
-                        }) {
-                            Text("重扫", style = MaterialTheme.typography.labelMedium)
+                        var libMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { libMenu = true }) {
+                            Icon(Icons.Filled.MoreVert, null)
+                        }
+                        DropdownMenu(expanded = libMenu, onDismissRequest = { libMenu = false }) {
+                            DropdownMenuItem(text = { Text("重新扫描（查找新文件）") }, onClick = {
+                                libMenu = false
+                                scope.launch { LibraryStore.rescanLibrary(lib.id) }
+                            })
+                            DropdownMenuItem(text = { Text("重新识别全部（修正识别错误）") }, onClick = {
+                                libMenu = false
+                                scope.launch { LibraryStore.reidentifyLibrary(lib.id) }
+                            })
+                            DropdownMenuItem(text = { Text("删除音乐库") }, onClick = {
+                                libMenu = false
+                                deleteTarget = lib
+                            })
                         }
                     }
                 }
@@ -241,6 +255,23 @@ fun HomeTab(openLibrary: (String) -> Unit) {
 
         if (addDialog) {
             AddLibraryDialog(onDismiss = { addDialog = false })
+        }
+
+        deleteTarget?.let { target ->
+            AlertDialog(
+                onDismissRequest = { deleteTarget = null },
+                title = { Text("删除音乐库") },
+                text = {
+                    Text("确定删除「${target.name}」吗？\n\n只删除库索引和识别结果，云盘里的文件不受影响。")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        deleteTarget = null
+                        LibraryStore.deleteLibrary(target.id)
+                    }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+            )
         }
     }
 }
@@ -318,8 +349,18 @@ fun FolderBrowserDialog(
         text = {
             Column(Modifier.heightIn(max = 400.dp)) {
                 if (provider.isSignedIn) {
-                    Text("当前：${current.name}", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val currentInLib = LibraryStore.libraries.any {
+                        it.providerKindRaw == kind.label && it.folderID == current.id
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("当前：${current.name}", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (currentInLib) {
+                            Spacer(Modifier.width(6.dp))
+                            Text("已入库", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
                     Spacer(Modifier.height(6.dp))
                     InputField(nameInput, { nameInput = it },
                         label = "库名称（可选）", modifier = Modifier.fillMaxWidth())
@@ -340,10 +381,20 @@ fun FolderBrowserDialog(
                             }
                         }
                         items(files, key = { it.id }) { f ->
-                            Text(f.name, Modifier.fillMaxWidth().padding(10.dp).clickable {
+                            val inLib = LibraryStore.libraries.any {
+                                it.providerKindRaw == kind.label && it.folderID == f.id
+                            }
+                            Row(Modifier.fillMaxWidth().clickable {
                                 backStack.add(current)
                                 current = f
-                            })
+                            }.padding(horizontal = 10.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Text(f.name, Modifier.weight(1f))
+                                if (inLib) {
+                                    Text("已入库", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
                         }
                         if (files.isEmpty() && !loading) {
                             item { Text("没有子文件夹", Modifier.padding(10.dp),

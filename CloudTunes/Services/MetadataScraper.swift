@@ -30,7 +30,8 @@ enum MetadataScraper {
     ///   - hintArtist/hintAlbum: 从文件夹结构推断出的歌手/专辑，比文件名可靠，用来约束在线匹配
     static func scrape(url: URL, headers: [String: String], trackID: String,
                        fallbackTitle: String, fallbackArtist: String?,
-                       hintArtist: String? = nil, hintAlbum: String? = nil) async -> Result {
+                       hintArtist: String? = nil, hintAlbum: String? = nil,
+                       forceOnline: Bool = false) async -> Result {
         var result = Result()
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
 
@@ -73,8 +74,9 @@ enum MetadataScraper {
             result.album = ha
         }
 
-        // 3. 在线匹配：缺封面 / 缺专辑 / 缺艺术家时才发起
-        let needOnline = result.artworkFile == nil
+        // 3. 在线匹配：缺封面 / 缺专辑 / 缺艺术家时才发起（单曲「重新刮削这首」强制发起）
+        let needOnline = forceOnline
+            || result.artworkFile == nil
             || (result.album?.isEmpty ?? true)
             || (result.artist?.isEmpty ?? true)
         let queryTitle = (result.title?.isEmpty == false) ? result.title! : fallbackTitle

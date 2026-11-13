@@ -339,14 +339,83 @@ object LibraryStore {
         added
     }
 
+    /// 重新识别整库：按文件名重新解析 + 在线重新匹配，纠正旧版本识别错的数据
+    /// （旧解析会在「歌名--歌手」这类命名上拆出「-陈鸿宇」残渣，且重扫只处理
+    /// 新增曲目，已入库的错误数据永远不会被自动修正——这个入口就是为此准备的）。
+    /// 手动改过（metaSource=manual）的曲目不动；返回处理的曲目数。
+    suspend fun reidentifyLibrary(libraryID: String): Int = withContext(Dispatchers.IO) {
+        val lib = library(libraryID) ?: return@withContext 0
+        val pending = lib.tracks.count { it.metaSource != "manual" }
+        scanProgress.value = ScanProgress(
+            phase = "重新识别（按文件名重置）…",
+            foundTracks = lib.tracks.size,
+            totalToScrape = pending,
+        )
+        val updated = lib.tracks.toMutableList()
+        var done = 0
+        for (i in updated.indices) {
+            val t = updated[i]
+            // 用户手动修过/手动匹配过的优先，绝不用自动结果覆盖
+            if (t.metaSource == "manual") continue
+            val parsed = Scanner.parse(t.fileName)
+            // 从目录结构推断歌手，与扫描时一致
+            val artistHint = t.folderPath?.firstOrNull { it.isNotBlank() }
+            val baseTitle = parsed.title.ifEmpty { t.title }
+            val baseArtist = parsed.artist ?: artistHint
+            val m = try {
+                Scraper.bestMatch(baseTitle, baseArtist, artistHint)
+            } catch (e: Exception) { null }
+            updated[i] = if (m != null) {
+                t.copy(
+                    title = m.info.title ?: baseTitle,
+                    artist = m.info.artist ?: baseArtist ?: t.artist,
+                    album = m.info.album ?: t.album,
+                    duration = m.info.duration ?: t.duration,
+                    neteaseID = m.info.neteaseID ?: t.neteaseID,
+                    artworkURL = m.info.coverURL ?: t.artworkURL,
+                    confidence = m.score,
+                    metaSource = "online",
+                    scraped = true,
+                    updatedAt = Instant.now(),
+                )
+            } else {
+                t.copy(
+                    title = baseTitle,
+                    artist = baseArtist ?: t.artist,
+                    metaSource = "filename",
+                    scraped = true,
+                    confidence = null,
+                    updatedAt = Instant.now(),
+                )
+            }
+            done++
+            scanProgress.value = scanProgress.value?.copy(scrapedTracks = done)
+            delay(300) // 刮削限速
+        }
+        val libIdx = libraries.indexOfFirst { it.id == libraryID }
+        if (libIdx >= 0) {
+            libraries[libIdx] = libraries[libIdx].copy(tracks = updated, updatedAt = Instant.now())
+        }
+        scanProgress.value?.let { it.phase = "完成"; scanProgress.value = it }
+        persist()
+        SyncService.scheduleSync("重新识别")
+        scanProgress.value = null
+        done
+    }
+
     /// 单曲重新刮削
     suspend fun rescrapeTrack(libraryID: String, trackID: String, candidate: Scraper.SongInfo? = null): Boolean {
         val lib = library(libraryID) ?: return false
         val idx = lib.tracks.indexOfFirst { it.id == trackID }
         if (idx < 0) return false
         val t = lib.tracks[idx]
+        // 用文件名重新解析做匹配输入：库里可能存着旧版本解析出的「-陈鸿宇」残渣，
+        // 拿残渣去搜永远搜不对；文件名才是干净的原始信息
+        val parsed = Scanner.parse(t.fileName)
+        val useTitle = parsed.title.ifEmpty { t.title }
+        val useArtist = parsed.artist ?: t.artist
         val m = candidate?.let { Scraper.Match(it, 1.0) }
-            ?: Scraper.bestMatch(t.title, t.artist, t.folderPath?.firstOrNull())
+            ?: Scraper.bestMatch(useTitle, useArtist, t.folderPath?.firstOrNull())
             ?: return false
         val updated = t.copy(
             title = m.info.title ?: t.title,

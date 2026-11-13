@@ -244,17 +244,30 @@ fun TVHome(openLibrary: (String) -> Unit, onOpenPlayer: () -> Unit) {
                 subtitle = "${lib.providerKind.label} · ${lib.tracks.size} 首 · ${lib.artistCount} 位歌手",
                 onClick = { openLibrary(lib.id) },
                 trailing = {
-                    val interaction = remember { MutableInteractionSource() }
-                    Text(
-                        "重扫",
-                        Modifier.tvFocusable(interaction) {
-                            scope.launch { LibraryStore.rescanLibrary(lib.id) }
-                        }
-                            .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 14.dp, vertical = 6.dp),
-                        color = Color.White.copy(alpha = 0.8f),
-                        style = MaterialTheme.typography.labelLarge,
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val interactionScan = remember { MutableInteractionSource() }
+                        Text(
+                            "重扫",
+                            Modifier.tvFocusable(interactionScan) {
+                                scope.launch { LibraryStore.rescanLibrary(lib.id) }
+                            }
+                                .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            color = Color.White.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        val interactionReid = remember { MutableInteractionSource() }
+                        Text(
+                            "识别",
+                            Modifier.tvFocusable(interactionReid) {
+                                scope.launch { LibraryStore.reidentifyLibrary(lib.id) }
+                            }
+                                .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            color = Color.White.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                 },
             )
         }

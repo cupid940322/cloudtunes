@@ -627,9 +627,15 @@ final class LibraryStore: ObservableObject {
                              isFolder: false, modifiedAt: nil, extra: ["parentID": item.parentID])
         guard let link = try? await provider.streamURL(file: file) else { return }
         let hint = scrapeHints(for: item)
+        // 匹配输入用文件名重新解析的结果：库里可能存着旧版本解析出的「-陈鸿宇」
+        // 这类残渣，拿残渣去搜永远搜不对；文件名才是干净的原始信息
+        let parsed = MusicScanner.parse(item.fileName)
+        let fallbackTitle = parsed.title.isEmpty ? item.title : parsed.title
+        let fallbackArtist = parsed.artist ?? item.artist
         let meta = await MetadataScraper.scrape(url: link.url, headers: link.headers, trackID: item.id,
-                                                fallbackTitle: item.title, fallbackArtist: item.artist,
-                                                hintArtist: hint.artist, hintAlbum: hint.album)
+                                                fallbackTitle: fallbackTitle, fallbackArtist: fallbackArtist,
+                                                hintArtist: hint.artist, hintAlbum: hint.album,
+                                                forceOnline: true)
         updateTrack(libraryID: libraryID, trackID: trackID) { t in
             if let v = meta.title, !v.isEmpty { t.title = v }
             if let v = meta.artist, !v.isEmpty { t.artist = v }
