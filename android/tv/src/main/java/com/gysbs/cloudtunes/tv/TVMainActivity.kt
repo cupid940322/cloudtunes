@@ -52,6 +52,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.gysbs.cloudtunes.core.LibraryStore
+import com.gysbs.cloudtunes.core.LyricSources
+import com.gysbs.cloudtunes.core.LyricsCache
 import com.gysbs.cloudtunes.player.PlayMode
 import com.gysbs.cloudtunes.core.SyncService
 import com.gysbs.cloudtunes.player.PlaybackService
@@ -333,6 +335,7 @@ fun TVPlayerScreen(onClose: () -> Unit) {
 
     var showLyrics by remember { mutableStateOf(true) }
     var showLyricsSearch by remember { mutableStateOf(false) }
+    val lyricScope = rememberCoroutineScope()
     val lyricState = rememberLazyListState()
     LaunchedEffect(lyricIndex) {
         if (lyricIndex >= 0 && lyricLines.isNotEmpty()) {
@@ -493,6 +496,7 @@ fun TVPlayerScreen(onClose: () -> Unit) {
     }
 
     // 手动搜索/匹配歌词（复用手机端弹窗；预填「歌手 歌名」并自动搜一次）
+    // 网易云候选写回 neteaseID；其他源取词直接应用 + 本地缓存
     if (showLyricsSearch) {
         val lib = LibraryStore.findTrack(track.id)
         LyricsSearchDialog(
@@ -504,7 +508,13 @@ fun TVPlayerScreen(onClose: () -> Unit) {
                 val nid = song.neteaseID
                 if (nid != null && nid > 0) {
                     lib?.let { LibraryStore.setTrackNeteaseID(it.first.id, it.second.id, nid) }
+                    LyricsCache.remove(track.id)
                     PlayerManager.refetchLyrics()
+                } else {
+                    lyricScope.launch {
+                        val text = runCatching { LyricSources.textFor(song) }.getOrNull()
+                        if (!text.isNullOrBlank()) PlayerManager.applyLyricsText(track.id, text)
+                    }
                 }
                 showLyricsSearch = false
             },

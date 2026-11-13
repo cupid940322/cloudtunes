@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.gysbs.cloudtunes.core.LibraryStore
+import com.gysbs.cloudtunes.core.LyricSources
+import com.gysbs.cloudtunes.core.LyricsCache
 import com.gysbs.cloudtunes.player.PlayMode
 import com.gysbs.cloudtunes.player.PlayerManager
 import kotlinx.coroutines.launch
@@ -316,7 +318,7 @@ fun PlayerScreen(onClose: () -> Unit) {
         }
     }
 
-    // 手动搜索/匹配歌词：把选中的网易云 ID 写回曲目并立即重新拉歌词
+    // 手动搜索/匹配歌词：四源候选——网易云写回 neteaseID，其他源取词直接应用 + 本地缓存
     if (showLyricsSearch) {
         val lib = LibraryStore.findTrack(track.id)
         LyricsSearchDialog(
@@ -328,7 +330,13 @@ fun PlayerScreen(onClose: () -> Unit) {
                 val nid = song.neteaseID
                 if (nid != null && nid > 0) {
                     lib?.let { LibraryStore.setTrackNeteaseID(it.first.id, it.second.id, nid) }
+                    LyricsCache.remove(track.id)
                     PlayerManager.refetchLyrics()
+                } else {
+                    scope.launch {
+                        val text = runCatching { LyricSources.textFor(song) }.getOrNull()
+                        if (!text.isNullOrBlank()) PlayerManager.applyLyricsText(track.id, text)
+                    }
                 }
                 showLyricsSearch = false
             },

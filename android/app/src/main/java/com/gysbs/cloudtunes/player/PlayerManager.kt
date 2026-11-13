@@ -258,10 +258,26 @@ object PlayerManager {
             return
         }
         val p = ensurePlayer() ?: return
+        if (!p.isPlaying) {
+            // 恢复播放同样要保证媒体服务还活着（同 prepareAndPlay 的注释）
+            ensurePlaybackService()
+        }
         try {
             if (p.isPlaying) p.pause() else { p.prepare(); p.play() }
         } catch (t: Throwable) {
             CrashLog.record("切换播放/暂停", t)
+        }
+    }
+
+    /// 拉起前台媒体服务（幂等：服务活着就不重复起）。
+    /// 只在 UI 主动播放的路径调用（此时 App 在前台，startService 不会被系统拒）。
+    private fun ensurePlaybackService() {
+        if (PlaybackService.running) return
+        if (!::appContext.isInitialized) return
+        try {
+            appContext.startService(android.content.Intent(appContext, PlaybackService::class.java))
+        } catch (t: Throwable) {
+            CrashLog.record("拉起播放服务", t)
         }
     }
 
@@ -328,6 +344,9 @@ object PlayerManager {
         currentTime.value = startAt
         duration.value = track.duration ?: 0.0
         updateLyricLine()
+        // 每次开播都确保前台媒体服务在跑：很多 ROM 在 App 切后台/上滑任务时
+        // 会把还没进前台的服务回收掉，MediaSession 一丢锁屏媒体卡片就没了
+        ensurePlaybackService()
 
         // ① 取直链：一定放在 IO 线程（网盘接口是阻塞的），失败只降级不闪退
         val resolved = try {
@@ -395,7 +414,7 @@ object PlayerManager {
                 Lyrics.fetch(libTrack ?: track.toLibraryLike())
             } catch (e: Exception) { null }
             if (currentTrack?.id == track.id) {
-                lyricLines.value = lrc?.let { Lyrics.parse(it) } ?: emptyList()
+                lyricLines.value = lrc?.let { Lyrics.parseAny(it) } ?: emptyList()
             }
         }
     }
@@ -403,6 +422,17 @@ object PlayerManager {
     /// 手动匹配歌词后重新拉取当前曲目的歌词（UI 从歌词搜索弹窗调用）。
     fun refetchLyrics() {
         currentTrack?.let { fetchLyrics(it) }
+    }
+
+    /// 直接应用一段歌词文本（手动从 QQ/酷狗/LRCLIB 选中的候选没有网易云 ID 可存，
+    /// 落进本地歌词缓存并立即显示；当前曲目才更新界面）。
+    fun applyLyricsText(trackId: String, text: String) {
+        if (text.isBlank()) return
+        LyricsCache.put(trackId, text)
+        if (currentTrack?.id == trackId) {
+            lyricLines.value = Lyrics.parseAny(text)
+            nowPlayingLineIndex.value = Lyrics.activeIndex(lyricLines.value, currentTime.value) ?: -1
+        }
     }
 
     private fun Track.toLibraryLike() = LibraryTrack(
@@ -459,10 +489,17 @@ object PlayerManager {
 /// 前台服务：锁屏/通知栏媒体控件
 class PlaybackService : MediaSessionService() {
 
+    companion object {
+        /// 服务是否在跑（给 PlayerManager.ensurePlaybackService 做幂等判断）
+        @Volatile
+        var running: Boolean = false
+    }
+
     private var mediaSession: MediaSession? = null
 
     override fun onCreate() {
         super.onCreate()
+        running = true
         try {
             PlayerManager.attach(this)
             val p = PlayerManager.player
@@ -507,6 +544,7 @@ class PlaybackService : MediaSessionService() {
         mediaSession = null
         // 注意：不 release ExoPlayer、也不把 PlayerManager.player 置空。
         // 服务被系统回收时界面还在用播放器，置空会让「继续播放」变成点了没反应。
+        running = false
         super.onDestroy()
     }
 }

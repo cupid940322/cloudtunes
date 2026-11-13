@@ -18,28 +18,38 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.gysbs.cloudtunes.core.Scraper
+import com.gysbs.cloudtunes.core.LyricSources
 import kotlinx.coroutines.launch
 
 // ── 手动搜索/匹配歌词弹窗（手机端与 TV 端共用）──
-// 打开时自动用预填关键词搜一次；改词可重搜；点选结果把 neteaseID 写回曲目。
+// 四源并发搜索（网易云/QQ音乐/酷狗/LRCLIB，对齐 iOS）；打开自动用预填关键词搜一次。
+// 点选结果由调用方处理：网易云候选写回 neteaseID；其他源取词直接应用 + 本地缓存。
 // 结果行做了 focusable + 焦点高亮，TV 遥控器也能上下选中。
 
 private val LyricsSearchBg = Color(0xFF26252E)
 private val LyricsSearchAccent = Color(0xFFE85D5D)
 
+private fun sourceColor(source: String): Color = when (source) {
+    "网易云" -> Color(0xFFE85D5D)
+    "QQ音乐" -> Color(0xFF5D8BE8)
+    "酷狗" -> Color(0xFF4CAF9E)
+    "LRCLIB" -> Color(0xFFB08BE8)
+    else -> Color.White.copy(alpha = 0.5f)
+}
+
 @Composable
 fun LyricsSearchDialog(
     initialQuery: String,
-    onPick: (Scraper.SongInfo) -> Unit,
+    onPick: (LyricSources.Candidate) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var query by remember { mutableStateOf(initialQuery) }
-    var results by remember { mutableStateOf<List<Scraper.SongInfo>>(emptyList()) }
+    var results by remember { mutableStateOf<List<LyricSources.Candidate>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val firstRowFocus = remember { FocusRequester() }
@@ -50,7 +60,7 @@ fun LyricsSearchDialog(
         scope.launch {
             searching = true
             results = try {
-                Scraper.neteaseSearch(trimmed, limit = 12)
+                LyricSources.searchAll(trimmed)
             } catch (e: Exception) {
                 emptyList()
             }
@@ -100,15 +110,15 @@ fun LyricsSearchDialog(
                     ) { CircularProgressIndicator(color = LyricsSearchAccent, modifier = Modifier.size(28.dp)) }
 
                     results.isEmpty() -> Text(
-                        "没有找到匹配的歌曲，换个关键词再试",
+                        "四个歌词库都没找到，换个关键词再试",
                         color = Color.White.copy(alpha = 0.45f),
                         fontSize = 14.sp,
                         modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        textAlign = TextAlign.Center,
                     )
 
                     else -> LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(340.dp),
+                        modifier = Modifier.fillMaxWidth().height(360.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         itemsIndexed(results) { idx, song ->
@@ -129,7 +139,7 @@ fun LyricsSearchDialog(
 
 @Composable
 private fun LyricsSearchRow(
-    song: Scraper.SongInfo,
+    song: LyricSources.Candidate,
     focusedBg: Color,
     autoFocus: Boolean,
     focusRequester: FocusRequester,
@@ -150,7 +160,7 @@ private fun LyricsSearchRow(
     ) {
         Column(Modifier.weight(1f)) {
             Text(
-                song.title ?: "未知歌曲",
+                song.title.ifBlank { "未知歌曲" },
                 color = Color.White,
                 fontSize = 15.sp,
                 maxLines = 1,
@@ -158,7 +168,10 @@ private fun LyricsSearchRow(
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                listOfNotNull(song.artist, song.album).joinToString(" · ").ifBlank { "未知歌手" },
+                listOfNotNull(
+                    song.artist.takeIf { it.isNotBlank() },
+                    song.album?.takeIf { it.isNotBlank() },
+                ).joinToString(" · ").ifBlank { "未知歌手" },
                 color = Color.White.copy(alpha = 0.55f),
                 fontSize = 13.sp,
                 maxLines = 1,
@@ -166,9 +179,10 @@ private fun LyricsSearchRow(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+        Spacer(Modifier.width(8.dp))
         Text(
-            if (song.source.isBlank()) "网易云" else song.source,
-            color = Color.White.copy(alpha = 0.35f),
+            song.source,
+            color = sourceColor(song.source),
             fontSize = 11.sp,
         )
     }

@@ -16,8 +16,17 @@ import com.gysbs.cloudtunes.ui.AppRoot
 import com.gysbs.cloudtunes.ui.Theme.CloudTunesTheme
 
 class App : android.app.Application() {
+
+    companion object {
+        /// 全局 Application 引用（手机/TV 共用此类）；给无 Context 的单例对象（如歌词缓存）用
+        @Volatile
+        var instance: App? = null
+            private set
+    }
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
         // 最先装崩溃日志，后面任何初始化异常都能留下堆栈
         CrashLog.install(this)
         try {
