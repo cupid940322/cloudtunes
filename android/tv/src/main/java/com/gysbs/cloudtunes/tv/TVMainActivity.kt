@@ -62,6 +62,7 @@ import com.gysbs.cloudtunes.ui.PlayerDock
 import com.gysbs.cloudtunes.ui.ProfileTab
 import com.gysbs.cloudtunes.ui.SearchTab
 import com.gysbs.cloudtunes.ui.SyncStatusLine
+import com.gysbs.cloudtunes.ui.LyricsSearchDialog
 import com.gysbs.cloudtunes.ui.formatDuration
 import kotlinx.coroutines.launch
 
@@ -331,6 +332,7 @@ fun TVPlayerScreen(onClose: () -> Unit) {
     BackHandler { onClose() }
 
     var showLyrics by remember { mutableStateOf(true) }
+    var showLyricsSearch by remember { mutableStateOf(false) }
     val lyricState = rememberLazyListState()
     LaunchedEffect(lyricIndex) {
         if (lyricIndex >= 0 && lyricLines.isNotEmpty()) {
@@ -426,6 +428,8 @@ fun TVPlayerScreen(onClose: () -> Unit) {
                             Spacer(Modifier.height(8.dp))
                             Text("暂无歌词", color = Color.White.copy(alpha = 0.45f),
                                 style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.height(14.dp))
+                            TVSmallButton("搜索歌词") { showLyricsSearch = true }
                         }
                     }
                 }
@@ -486,6 +490,26 @@ fun TVPlayerScreen(onClose: () -> Unit) {
                 TVControlButton(Icons.Filled.SkipNext, "下一首") { PlayerManager.playNext() }
             }
         }
+    }
+
+    // 手动搜索/匹配歌词（复用手机端弹窗；预填「歌手 歌名」并自动搜一次）
+    if (showLyricsSearch) {
+        val lib = LibraryStore.findTrack(track.id)
+        LyricsSearchDialog(
+            initialQuery = listOfNotNull(
+                lib?.second?.artist?.takeIf { it.isNotBlank() },
+                lib?.second?.title ?: track.displayTitle,
+            ).joinToString(" "),
+            onPick = { song ->
+                val nid = song.neteaseID
+                if (nid != null && nid > 0) {
+                    lib?.let { LibraryStore.setTrackNeteaseID(it.first.id, it.second.id, nid) }
+                    PlayerManager.refetchLyrics()
+                }
+                showLyricsSearch = false
+            },
+            onDismiss = { showLyricsSearch = false },
+        )
     }
 }
 

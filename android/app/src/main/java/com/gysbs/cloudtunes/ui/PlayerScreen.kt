@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -95,6 +96,7 @@ fun PlayerScreen(onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     val onLyricsPage = pagerState.currentPage == 1 || pagerState.targetPage == 1
     val lyricListState = rememberLazyListState()
+    var showLyricsSearch by remember { mutableStateOf(false) }
 
     // 歌词自动滚动到当前行
     LaunchedEffect(lyricIndex, onLyricsPage) {
@@ -181,6 +183,14 @@ fun PlayerScreen(onClose: () -> Unit) {
                                 if (isLoading) "正在获取歌词…" else "暂无歌词",
                                 color = OnPlayerBgDim, style = MaterialTheme.typography.bodyMedium,
                             )
+                            if (!isLoading) {
+                                Spacer(Modifier.height(14.dp))
+                                TextButton(onClick = { showLyricsSearch = true }) {
+                                    Icon(Icons.Filled.Search, null, tint = PlayerAccent, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("搜索歌词", color = OnPlayerBg, style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
                         }
                     } else {
                         LazyColumn(
@@ -304,5 +314,25 @@ fun PlayerScreen(onClose: () -> Unit) {
             }
             Spacer(Modifier.height(10.dp))
         }
+    }
+
+    // 手动搜索/匹配歌词：把选中的网易云 ID 写回曲目并立即重新拉歌词
+    if (showLyricsSearch) {
+        val lib = LibraryStore.findTrack(track.id)
+        LyricsSearchDialog(
+            initialQuery = listOfNotNull(
+                lib?.second?.artist?.takeIf { it.isNotBlank() },
+                lib?.second?.title ?: track.displayTitle,
+            ).joinToString(" "),
+            onPick = { song ->
+                val nid = song.neteaseID
+                if (nid != null && nid > 0) {
+                    lib?.let { LibraryStore.setTrackNeteaseID(it.first.id, it.second.id, nid) }
+                    PlayerManager.refetchLyrics()
+                }
+                showLyricsSearch = false
+            },
+            onDismiss = { showLyricsSearch = false },
+        )
     }
 }

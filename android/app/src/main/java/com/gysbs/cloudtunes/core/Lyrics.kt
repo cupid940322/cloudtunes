@@ -46,19 +46,33 @@ object Lyrics {
         return result
     }
 
-    /// 获取歌词：优先用已刮削到的 neteaseID，没有就按「歌手 歌名」现场搜一次
+    /// 获取歌词：优先用已刮削到的 neteaseID，没有就按多个关键词现场搜一轮。
+    /// 关键词依次为「歌手 歌名」→ 歌名 → 去掉括号标注的歌名，任一命中即用。
     suspend fun fetch(track: LibraryTrack): String? {
         var id = track.neteaseID
         if (id == null || id <= 0) {
-            val kw = buildString {
-                if (!track.artist.isNullOrBlank()) append(track.artist).append(' ')
-                append(track.title)
+            val artist = track.artist?.takeIf { it.isNotBlank() }
+            val rawTitle = track.title
+            val cleanTitle = Scanner.parseTitle(rawTitle).ifBlank { rawTitle }
+            val queries = buildList {
+                artist?.let { add("$it $rawTitle") }
+                add(rawTitle)
+                if (cleanTitle != rawTitle) add(cleanTitle)
+            }.distinct()
+            for (kw in queries) {
+                val hit = Scraper.neteaseSearch(kw, limit = 4).firstOrNull { song ->
+                    val songTitle = song.title ?: return@firstOrNull false
+                    val titleOk = TextMatch.similarity(cleanTitle, Scanner.parseTitle(songTitle)) >= 0.55 ||
+                        TextMatch.similarity(cleanTitle, songTitle) >= 0.55
+                    val artistOk = artist == null || song.artist.isNullOrBlank() ||
+                        TextMatch.similarity(artist, song.artist) >= 0.40
+                    titleOk && artistOk
+                }?.neteaseID ?: continue
+                id = hit
+                break
             }
-            if (kw.isBlank()) return null
-            id = Scraper.neteaseSearch(kw, limit = 1).firstOrNull { song ->
-                TextMatch.similarity(track.title, song.title ?: "") >= 0.55
-            }?.neteaseID ?: return null
         }
+        if (id == null || id <= 0) return null
         return Scraper.neteaseLyrics(id)
     }
 }

@@ -400,6 +400,11 @@ object PlayerManager {
         }
     }
 
+    /// 手动匹配歌词后重新拉取当前曲目的歌词（UI 从歌词搜索弹窗调用）。
+    fun refetchLyrics() {
+        currentTrack?.let { fetchLyrics(it) }
+    }
+
     private fun Track.toLibraryLike() = LibraryTrack(
         id = id, fileID = file.id, fileName = file.name,
         title = displayTitle, artist = artistOverride, album = album,
