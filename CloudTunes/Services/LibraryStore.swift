@@ -614,8 +614,8 @@ final class LibraryStore: ObservableObject {
             let batch = Array(targets[cursor..<min(cursor + batchSize, targets.count)])
             // 目录提示在主线程先算好，别在并发任务里再回头读 self
             let batchHints = batch.map { scrapeHints(for: $0) }
-            let fixed: [(String, SongInfo, Double)] = await withTaskGroup(
-                of: (String, SongInfo?, Double).self) { group in
+            let fixed: [(String, MusicSearchService.SongInfo, Double)] = await withTaskGroup(
+                of: (String, MusicSearchService.SongInfo?, Double).self) { group in
                 for (i, t) in batch.enumerated() {
                     let hint = batchHints[i]
                     group.addTask {
@@ -630,7 +630,7 @@ final class LibraryStore: ObservableObject {
                         return (t.id, m?.info, m?.score ?? 0)
                     }
                 }
-                var out: [(String, SongInfo?, Double)] = []
+                var out: [(String, MusicSearchService.SongInfo?, Double)] = []
                 for await r in group { out.append(r) }
                 return out.compactMap { id, info, score in
                     info.map { (id, $0, score) }
@@ -698,6 +698,7 @@ final class LibraryStore: ObservableObject {
               let provider = ProviderRegistry.provider(kind: lib.providerKind) else { return }
         let file = CloudFile(id: item.fileID, name: item.fileName, size: item.size,
                              isFolder: false, modifiedAt: nil, extra: ["parentID": item.parentID])
+        let hint = scrapeHints(for: item)
         guard let link = try? await provider.streamURL(file: file) else {
             // 直链失败也要做纯在线修正：只靠文件名解析 + 搜索 API。
             // 原来直接 return，错误元数据原地不动，用户点「重新刮削这首」毫无效果
@@ -721,7 +722,6 @@ final class LibraryStore: ObservableObject {
             save()
             return
         }
-        let hint = scrapeHints(for: item)
         // 匹配输入用文件名重新解析的结果：库里可能存着旧版本解析出的「-陈鸿宇」
         // 这类残渣，拿残渣去搜永远搜不对；文件名才是干净的原始信息
         let parsed = MusicScanner.parse(item.fileName)
