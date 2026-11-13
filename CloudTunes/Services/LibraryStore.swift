@@ -141,12 +141,14 @@ final class LibraryStore: ObservableObject {
         favoriteIDs = favorites
         recentIDs = recent
         if !libTombstones.isEmpty {
-            deletedLibraries.merge(libTombstones) { old, new in min(old, new) }
+            // 墓碑取最新删除时间：min 会让最早的删除永远压不过恢复后的 updatedAt，
+            // 之后怎么删都删不掉（「删库复活」的帮凶之一）
+            deletedLibraries.merge(libTombstones) { old, new in max(old, new) }
         }
         for (libID, marks) in trackTombstones {
             var existing = deletedTracks[libID] ?? [:]
             for (tid, at) in marks {
-                existing[tid] = min(existing[tid] ?? at, at)
+                existing[tid] = max(existing[tid] ?? at, at)
             }
             deletedTracks[libID] = existing
         }

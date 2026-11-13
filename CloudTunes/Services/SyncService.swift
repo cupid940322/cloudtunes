@@ -153,6 +153,10 @@ final class SyncService: ObservableObject {
 
         if pending {
             pending = false
+            // 必须先释放 running 再递归：补同步发生在 defer 之前，
+            // 此时 running 还是 true，递归进来只会把 pending 重新置 true 后直接返回——
+            // 「补同步」静默被吞，删除/修正的那一轮就丢了
+            running = false
             await sync(reason: "补同步")
         }
     }
@@ -286,11 +290,14 @@ final class SyncService: ObservableObject {
                 libMap[m.id] = m
             }
         }
-        // 墓碑：删除时间晚于该库最后修改时间才算真的删了
-        for (id, at) in local.deletedLibraries.merging(remote.deletedLibraries, uniquingKeysWith: min) {
-            if let m = libMap[id], at > m.updatedAt {
-                libMap.removeValue(forKey: id)
-            }
+        // 墓碑合并取最新一次删除：min 会导致「一次失效就永久失效」——库被恢复后
+        // updatedAt 变新，最早的删除时间永远压不过它，之后怎么删都删不掉。
+        // 墓碑无条件胜出：库 id 是 UUID 永不复用（重新添加同一文件夹会得到新 id），
+        // 有墓碑的库一律视为已删除。旧逻辑「删除时间晚于库 updatedAt 才算删」会被
+        // 另一端的扫描/改名刷时间戳轻易击穿——这正是「删库过几秒又出现」的根因
+        let mergedDeletedLibs = local.deletedLibraries.merging(remote.deletedLibraries, uniquingKeysWith: max)
+        for id in mergedDeletedLibs.keys {
+            libMap.removeValue(forKey: id)
         }
 
         // 收藏 / 播放记录：整体取较新的一方。
@@ -335,7 +342,7 @@ final class SyncService: ObservableObject {
                            favorites: favorites,
                            recent: recent,
                            session: session,
-                           deletedLibraries: local.deletedLibraries.merging(remote.deletedLibraries, uniquingKeysWith: min),
+                           deletedLibraries: mergedDeletedLibs,
                            deletedTracks: mergeTombstoneMaps(local.deletedTracks, remote.deletedTracks))
     }
 
@@ -345,7 +352,7 @@ final class SyncService: ObservableObject {
         for (libID, marks) in b {
             if var existing = out[libID] {
                 for (tid, at) in marks {
-                    existing[tid] = min(existing[tid] ?? at, at)
+                    existing[tid] = max(existing[tid] ?? at, at)
                 }
                 out[libID] = existing
             } else {
@@ -362,14 +369,14 @@ final class SyncService: ObservableObject {
         for t in remote { map[t.id] = t }
         for t in local {
             if let r = map[t.id] {
-                if (t.updatedAt ?? .distantPast) >= (r.updatedAt ?? .distantPast) {
-                    map[t.id] = t
-                }
+                map[t.id] = mergeTrack(t, r)
             } else {
                 map[t.id] = t
             }
         }
         for (id, at) in tombstones {
+            // 曲目 id 会复用（删掉后重新扫描同一文件会生成同一 id），保留
+            // 「重新添加的时间新于删除时间则复活」的语义；墓碑本身取 max 合并
             if let t = map[id], at > (t.updatedAt ?? .distantPast) {
                 map.removeValue(forKey: id)
             }
@@ -377,6 +384,16 @@ final class SyncService: ObservableObject {
         return map.values.sorted {
             ($0.addedAt ?? .distantPast) < ($1.addedAt ?? .distantPast)
         }
+    }
+
+    /// 单条曲目合并：手动修过的优先，其次才比 updatedAt。
+    /// 只比时间戳的话，另一端任何批量操作（重扫/重新识别）都会把整库时间刷成
+    /// 「现在」，把这一端手工纠正的结果合法地压掉——用户手动改过的信息必须保住
+    private static func mergeTrack(_ local: LibraryTrack, _ remote: LibraryTrack) -> LibraryTrack {
+        let lManual = local.metaSource == "manual"
+        let rManual = remote.metaSource == "manual"
+        if lManual != rManual { return lManual ? local : remote }
+        return (local.updatedAt ?? .distantPast) >= (remote.updatedAt ?? .distantPast) ? local : remote
     }
 
     // MARK: - 编解码

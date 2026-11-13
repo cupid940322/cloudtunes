@@ -280,14 +280,15 @@ object SyncService {
                 if (m.updatedAt >= r.updatedAt) libMap[m.id] = m
             } else libMap[m.id] = m
         }
-        // 墓碑：删除时间晚于该库最后修改时间才算真的删了
+        // 墓碑合并取最新一次删除：min 会导致「一次失效就永久失效」——库被恢复后
+        // updatedAt 变新，最早的删除时间永远压不过它，之后怎么删都删不掉
         val deletedLibs = LinkedHashMap<String, Instant>()
-        local.deletedLibraries.forEach { (k, v) -> deletedLibs.merge(k, v, ::minOf) }
-        remote.deletedLibraries.forEach { (k, v) -> deletedLibs.merge(k, v, ::minOf) }
-        for ((id, at) in deletedLibs) {
-            val m = libMap[id]
-            if (m != null && at > m.updatedAt) libMap.remove(id)
-        }
+        local.deletedLibraries.forEach { (k, v) -> deletedLibs.merge(k, v, ::maxOf) }
+        remote.deletedLibraries.forEach { (k, v) -> deletedLibs.merge(k, v, ::maxOf) }
+        // 墓碑无条件胜出：库 id 是 UUID 永不复用（重新添加同一文件夹会得到新 id），
+        // 所以有墓碑的库一律视为已删除。旧逻辑「删除时间晚于库 updatedAt 才算删」
+        // 会被另一端的扫描/改名刷时间戳轻易击穿——这正是「删库过几秒又出现」的根因
+        for (id in deletedLibs.keys) libMap.remove(id)
 
         // LWW；但「一边为空」时不按时间戳判——新设备空收藏绝不能把云端收藏抹掉
         val favorites = when {
@@ -330,7 +331,7 @@ object SyncService {
         val out = HashMap(a)
         for ((libID, marks) in b) {
             val existing = out[libID]?.toMutableMap() ?: mutableMapOf()
-            for ((tid, at) in marks) existing[tid] = minOf(existing[tid] ?: at, at)
+            for ((tid, at) in marks) existing[tid] = maxOf(existing[tid] ?: at, at)
             out[libID] = existing
         }
         return out
@@ -341,15 +342,25 @@ object SyncService {
         for (t in remote) map[t.id] = t
         for (t in local) {
             val r = map[t.id]
-            if (r != null) {
-                if ((t.updatedAt ?: Instant.EPOCH) >= (r.updatedAt ?: Instant.EPOCH)) map[t.id] = t
-            } else map[t.id] = t
+            if (r != null) map[t.id] = mergeTrack(t, r) else map[t.id] = t
         }
         for ((id, at) in tombstones) {
             val t = map[id]
+            // 曲目 id 会复用（删掉后重新扫描同一文件会生成同一 id），所以保留
+            // 「重新添加的时间新于删除时间则复活」的语义；墓碑本身取 max 合并
             if (t != null && at > (t.updatedAt ?: Instant.EPOCH)) map.remove(id)
         }
         return map.values.sortedBy { it.addedAt ?: Instant.EPOCH }
+    }
+
+    /// 单条曲目合并：手动修过的优先，其次才比 updatedAt。
+    /// 只比时间戳的话，另一端任何批量操作（重扫/重新识别）都会把整库时间刷成
+    /// 「现在」，把这一端手工纠正的结果合法地压掉——用户手动改过的信息必须保住
+    private fun mergeTrack(local: LibraryTrack, remote: LibraryTrack): LibraryTrack {
+        val lManual = local.metaSource == "manual"
+        val rManual = remote.metaSource == "manual"
+        if (lManual != rManual) return if (lManual) local else remote
+        return if ((local.updatedAt ?: Instant.EPOCH) >= (remote.updatedAt ?: Instant.EPOCH)) local else remote
     }
 
     // ── GitHub Gist API ──
@@ -416,11 +427,9 @@ object SyncService {
     }
 
     private suspend fun fetchFiles(gistID: String, token: String): Map<String, String> {
-        val (text, _) = try {
-            send(request("https://api.github.com/gists/$gistID", token))
-        } catch (e: Exception) {
-            return emptyMap()
-        }
+        // 读失败必须抛出去：吞掉异常会让「云端为空」——合并结果等于本地，
+        // 然后把本地 account.json 整体推上去，冲掉另一台设备的墓碑和独有的库
+        val (text, _) = send(request("https://api.github.com/gists/$gistID", token))
         val payload = JSONObject(text)
         val files = payload.optJSONObject("files") ?: return emptyMap()
         val out = mutableMapOf<String, String>()

@@ -166,6 +166,13 @@ object LibraryStore {
         libraries.any { it.providerKind == kind && it.folderID == folderID }
 
     fun createLibrary(kind: CloudKind, folder: CloudFile, name: String, includeSubfolders: Boolean): MusicLibrary {
+        // 同一网盘同一文件夹只允许一个库：重复建库会出现两条不同 id 的「同文件夹库」，
+        // 删掉一条后另一条会在同步时把它合并回来，看起来就是「删库复活」
+        libraries.firstOrNull {
+            it.providerKindRaw == kind.label && it.folderID == folder.id
+        }?.let { existing ->
+            return existing
+        }
         val lib = MusicLibrary(
             id = java.util.UUID.randomUUID().toString(),
             name = name.ifEmpty { folder.name.ifEmpty { kind.label } },
@@ -204,6 +211,9 @@ object LibraryStore {
         favorites.removeAll(lib.tracks.map { it.id }.toSet())
         recent.removeAll(lib.tracks.map { it.id }.toSet())
         persist()
+        // 删除必须主动推送：等下一次别的操作顺带同步的话，
+        // 另一端的库会在这几秒里被合并回来（「删库复活」）
+        SyncService.scheduleSync("删除音乐库")
     }
 
     fun deleteTrack(libraryID: String, trackID: String) {
@@ -216,6 +226,7 @@ object LibraryStore {
         favorites.remove(trackID)
         recent.removeAll { it == trackID }
         persist()
+        SyncService.scheduleSync("删除曲目")
     }
 
     // ── 扫描 + 刮削 ──
@@ -282,6 +293,7 @@ object LibraryStore {
                 artist = parsed.artist ?: artistHint,
                 scraped = false,
                 addedAt = Instant.now(),
+                updatedAt = Instant.now(),
                 parentName = hit.parentName,
                 folderPath = hit.folderPath.ifEmpty { null },
             )
@@ -310,9 +322,11 @@ object LibraryStore {
                             confidence = m.score,
                             metaSource = "online",
                             scraped = true,
+                            updatedAt = Instant.now(),
                         )
                     } else {
-                        updated[idx].copy(metaSource = "filename", scraped = true, confidence = null)
+                        updated[idx].copy(metaSource = "filename", scraped = true, confidence = null,
+                            updatedAt = Instant.now())
                     }
                 }
                 delay(300) // 刮削限速
@@ -326,10 +340,12 @@ object LibraryStore {
 
         val libIdx = libraries.indexOfFirst { it.id == libraryID }
         if (libIdx >= 0) {
+            // 只有真的添加了新曲目才刷新库级 updatedAt——空扫描把时间戳刷成
+            // 「现在」会在同步时压掉另一端的合法修改，还会击穿删除墓碑
             libraries[libIdx] = libraries[libIdx].copy(
                 tracks = updated,
                 lastScanAt = Instant.now(),
-                updatedAt = Instant.now(),
+                updatedAt = if (added > 0) Instant.now() else libraries[libIdx].updatedAt,
             )
         }
         scanProgress.value?.let { it.phase = "完成"; scanProgress.value = it }
@@ -365,8 +381,8 @@ object LibraryStore {
             val m = try {
                 Scraper.bestMatch(baseTitle, baseArtist, artistHint)
             } catch (e: Exception) { null }
-            updated[i] = if (m != null) {
-                t.copy(
+            if (m != null) {
+                val candidate = t.copy(
                     title = m.info.title ?: baseTitle,
                     artist = m.info.artist ?: baseArtist ?: t.artist,
                     album = m.info.album ?: t.album,
@@ -376,17 +392,23 @@ object LibraryStore {
                     confidence = m.score,
                     metaSource = "online",
                     scraped = true,
-                    updatedAt = Instant.now(),
                 )
+                // 内容没变就不写 updatedAt：空刷新会把「现在」的时间戳推给另一端，
+                // 在 LWW 合并里压掉那边更新的合法修改
+                val changed = candidate.title != t.title || candidate.artist != t.artist ||
+                    candidate.album != t.album || candidate.artworkURL != t.artworkURL ||
+                    candidate.neteaseID != t.neteaseID
+                updated[i] = if (changed) candidate.copy(updatedAt = Instant.now()) else t.copy(scraped = true)
             } else {
-                t.copy(
+                val candidate = t.copy(
                     title = baseTitle,
                     artist = baseArtist ?: t.artist,
                     metaSource = "filename",
                     scraped = true,
                     confidence = null,
-                    updatedAt = Instant.now(),
                 )
+                val changed = candidate.title != t.title || candidate.artist != t.artist
+                updated[i] = if (changed) candidate.copy(updatedAt = Instant.now()) else t.copy(scraped = true)
             }
             done++
             scanProgress.value = scanProgress.value?.copy(scrapedTracks = done)
@@ -394,7 +416,12 @@ object LibraryStore {
         }
         val libIdx = libraries.indexOfFirst { it.id == libraryID }
         if (libIdx >= 0) {
-            libraries[libIdx] = libraries[libIdx].copy(tracks = updated, updatedAt = Instant.now())
+            val touched = updated.zip(lib.tracks).any { (n, o) -> n != o }
+            // 没有实质变化就不刷新库级 updatedAt，理由同曲目
+            libraries[libIdx] = libraries[libIdx].copy(
+                tracks = updated,
+                updatedAt = if (touched) Instant.now() else libraries[libIdx].updatedAt,
+            )
         }
         scanProgress.value?.let { it.phase = "完成"; scanProgress.value = it }
         persist()
