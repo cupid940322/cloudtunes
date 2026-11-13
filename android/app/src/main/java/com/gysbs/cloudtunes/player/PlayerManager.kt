@@ -52,6 +52,9 @@ class HeaderedDataSourceFactory : DataSource.Factory {
     }
 }
 
+/// 播放模式：顺序循环 / 单曲循环 / 随机播放
+enum class PlayMode { SEQUENTIAL, REPEAT_ONE, SHUFFLE }
+
 /// 播放中枢（对齐 iOS PlayerManager 的核心行为：队列/切歌/歌词/继续播放）
 object PlayerManager {
 
@@ -78,6 +81,17 @@ object PlayerManager {
         get() = queue.getOrNull(currentIndex.value)
     var loadError = mutableStateOf<String?>(null)
 
+    /// 播放模式（持久化；手机版和 TV 版共用同一套逻辑）
+    var playMode = mutableStateOf(PlayMode.SEQUENTIAL)
+        private set
+    private val modePrefs: android.content.SharedPreferences? by lazy {
+        if (::appContext.isInitialized)
+            appContext.getSharedPreferences("cloudtunes.player", android.content.Context.MODE_PRIVATE)
+        else null
+    }
+    /// 随机模式下的回退历史（「上一首」回到刚才随机跳过的歌）
+    private val shuffleHistory = mutableListOf<Int>()
+
     private var dataSourceFactory = HeaderedDataSourceFactory()
     private var lyricJob: Job? = null
     private var timePollJob: Job? = null
@@ -99,7 +113,24 @@ object PlayerManager {
             } catch (t: Throwable) {
                 CrashLog.record("setWakeMode（WAKE_LOCK 权限缺失？）", t)
             }
+            // 音频焦点 + 媒体用途：锁屏/通知栏媒体卡片、与其他 App 抢焦点时自动暂停都依赖这个
+            try {
+                p.setAudioAttributes(
+                    androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+                        .build(),
+                    true,
+                )
+            } catch (t: Throwable) {
+                CrashLog.record("setAudioAttributes", t)
+            }
             p.addListener(playerListener)
+            // 恢复上次的播放模式
+            playMode.value = modePrefs?.getString("mode", null)?.let { saved ->
+                runCatching { PlayMode.valueOf(saved) }.getOrNull()
+            } ?: PlayMode.SEQUENTIAL
+            applyExoRepeatMode(p)
             player = p
         } catch (t: Throwable) {
             CrashLog.record("创建 ExoPlayer 失败", t)
@@ -112,6 +143,31 @@ object PlayerManager {
         return player
     }
 
+    // ── 播放模式 ──
+
+    /// 顺序循环 → 单曲循环 → 随机播放 → 顺序循环
+    fun cyclePlayMode() {
+        val next = when (playMode.value) {
+            PlayMode.SEQUENTIAL -> PlayMode.REPEAT_ONE
+            PlayMode.REPEAT_ONE -> PlayMode.SHUFFLE
+            PlayMode.SHUFFLE -> PlayMode.SEQUENTIAL
+        }
+        playMode.value = next
+        modePrefs?.edit()?.putString("mode", next.name)?.apply()
+        shuffleHistory.clear()
+        applyExoRepeatMode(player)
+    }
+
+    /// 单曲循环交给 ExoPlayer 的 repeatMode 原生实现（无缝循环，且 STATE_ENDED 不会触发）
+    private fun applyExoRepeatMode(p: ExoPlayer?) {
+        try {
+            p?.repeatMode = if (playMode.value == PlayMode.REPEAT_ONE)
+                Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        } catch (t: Throwable) {
+            CrashLog.record("设置播放模式", t)
+        }
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(playing: Boolean) {
             isPlaying.value = playing
@@ -120,8 +176,15 @@ object PlayerManager {
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_ENDED) {
-                // 整张队列播完 → 回卷；否则自动下一首
-                if (currentIndex.value >= queue.size - 1) rewindAfterFinish() else playNext(auto = true)
+                // 单曲循环由 ExoPlayer repeatMode 处理，不会走到这里；
+                // 随机模式播完就继续随机下一首，顺序模式播完整张队列回卷
+                if (playMode.value == PlayMode.SHUFFLE) {
+                    playNext(auto = true)
+                } else if (currentIndex.value >= queue.size - 1) {
+                    rewindAfterFinish()
+                } else {
+                    playNext(auto = true)
+                }
             }
             if (state == Player.STATE_READY) {
                 consecutiveFailures = 0
@@ -170,6 +233,7 @@ object PlayerManager {
         if (tracks.isEmpty()) return
         queue.clear()
         queue.addAll(tracks)
+        shuffleHistory.clear()
         currentIndex.value = index.coerceIn(0, tracks.size - 1)
         LibraryStore.recordRecent(tracks[currentIndex.value].id)
         scope.launch { prepareAndPlay(tracks[currentIndex.value]) }
@@ -180,6 +244,7 @@ object PlayerManager {
         val s = LibraryStore.session.value ?: return
         queue.clear()
         queue.addAll(s.tracks)
+        shuffleHistory.clear()
         currentIndex.value = s.index.coerceIn(0, s.tracks.size - 1)
         scope.launch {
             prepareAndPlay(s.tracks[currentIndex.value], startAt = position)
@@ -212,7 +277,16 @@ object PlayerManager {
 
     fun playNext(auto: Boolean = false) {
         if (queue.isEmpty()) return
-        val next = currentIndex.value + 1
+        val next = when {
+            playMode.value == PlayMode.SHUFFLE && queue.size > 1 -> {
+                // 随机：记住当前首（供「上一首」回退），挑一个不是当前首的
+                shuffleHistory.add(currentIndex.value)
+                var r = currentIndex.value
+                while (r == currentIndex.value) r = kotlin.random.Random.nextInt(queue.size)
+                r
+            }
+            else -> currentIndex.value + 1
+        }
         if (next >= queue.size) {
             if (!auto) rewindAfterFinish()
             return
@@ -224,7 +298,12 @@ object PlayerManager {
 
     fun playPrev() {
         if (queue.isEmpty()) return
-        val prev = if (currentTime.value > 3.0) currentIndex.value else (currentIndex.value - 1).coerceAtLeast(0)
+        val prev = when {
+            currentTime.value > 3.0 -> currentIndex.value
+            playMode.value == PlayMode.SHUFFLE && shuffleHistory.isNotEmpty() ->
+                shuffleHistory.removeAt(shuffleHistory.lastIndex).coerceIn(0, queue.size - 1)
+            else -> (currentIndex.value - 1).coerceAtLeast(0)
+        }
         currentIndex.value = prev
         scope.launch { prepareAndPlay(queue[prev]) }
     }
@@ -382,7 +461,19 @@ class PlaybackService : MediaSessionService() {
         try {
             PlayerManager.attach(this)
             val p = PlayerManager.player
-            if (p != null) mediaSession = MediaSession.Builder(this, p).build()
+            if (p != null) {
+                // 点锁屏/通知栏的媒体卡片直接回到 App
+                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                val activityPi = launchIntent?.let {
+                    android.app.PendingIntent.getActivity(
+                        this, 0, it,
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+                    )
+                }
+                val builder = MediaSession.Builder(this, p)
+                activityPi?.let { builder.setSessionActivity(it) }
+                mediaSession = builder.build()
+            }
         } catch (t: Throwable) {
             // 媒体会话建不起来只是没有通知栏控件，绝不能让 App 起不来
             CrashLog.record("PlaybackService 初始化", t)

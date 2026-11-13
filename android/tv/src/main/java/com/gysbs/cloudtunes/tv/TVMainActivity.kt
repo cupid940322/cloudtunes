@@ -26,6 +26,9 @@ import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
@@ -33,6 +36,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -47,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.gysbs.cloudtunes.core.LibraryStore
+import com.gysbs.cloudtunes.player.PlayMode
 import com.gysbs.cloudtunes.core.SyncService
 import com.gysbs.cloudtunes.player.PlaybackService
 import com.gysbs.cloudtunes.player.PlayerManager
@@ -315,6 +321,7 @@ fun TVPlayerScreen(onClose: () -> Unit) {
     val duration by PlayerManager.duration
     val lyricLines by PlayerManager.lyricLines
     val lyricIndex by PlayerManager.nowPlayingLineIndex
+    val playMode by PlayerManager.playMode
 
     val view = LocalView.current
     DisposableEffect(Unit) {
@@ -326,99 +333,158 @@ fun TVPlayerScreen(onClose: () -> Unit) {
     var showLyrics by remember { mutableStateOf(true) }
     val lyricState = rememberLazyListState()
     LaunchedEffect(lyricIndex) {
-        if (lyricIndex >= 0) {
-            lyricState.animateScrollToItem((lyricIndex - 4).coerceAtLeast(0))
+        if (lyricIndex >= 0 && lyricLines.isNotEmpty()) {
+            lyricState.animateScrollToItem((lyricIndex - 4).coerceAtLeast(0).coerceAtMost(lyricLines.size - 1))
         }
     }
 
-    Column(
-        Modifier.fillMaxSize().background(Color(0xFF0A0B12)).padding(horizontal = 64.dp, vertical = 28.dp),
-    ) {
-        // 顶栏
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TVSmallButton("返回", onClose)
-            Spacer(Modifier.weight(1f))
-            Text("正在播放", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.weight(1f))
-            TVSmallButton(if (showLyrics) "隐藏歌词" else "显示歌词") { showLyrics = !showLyrics }
-        }
-        Spacer(Modifier.height(16.dp))
+    val artwork = LibraryStore.findTrack(track.id)?.second?.artworkURL
 
-        // 封面 + 信息 + 歌词
-        Row(Modifier.weight(1f).fillMaxWidth()) {
-            val artwork = LibraryStore.findTrack(track.id)?.second?.artworkURL
-            AsyncImage(
-                artwork, null,
-                Modifier.size(340.dp).align(Alignment.CenterVertically),
-                contentScale = ContentScale.Crop,
-            )
-            Spacer(Modifier.width(48.dp))
-            Column(Modifier.weight(1f).fillMaxHeight()) {
-                Text(track.displayTitle, style = MaterialTheme.typography.headlineMedium,
-                    color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(track.displayArtist, style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(12.dp))
-                if (showLyrics && lyricLines.isNotEmpty()) {
-                    LazyColumn(state = lyricState, modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        items(lyricLines, key = { it.index }) { line ->
-                            val active = line.index == lyricIndex
-                            Text(
-                                line.text,
-                                textAlign = TextAlign.Center,
-                                fontSize = if (active) 24.sp else 18.sp,
-                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                                color = if (active) TVAccent else Color.White.copy(alpha = 0.45f),
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            )
+    Box(Modifier.fillMaxSize().background(Color(0xFF0A0B12))) {
+        // 沉浸背景：当前封面放大压暗（老系统不支持模糊也能正常显示）
+        AsyncImage(
+            artwork, null,
+            Modifier.fillMaxSize().blur(64.dp),
+            contentScale = ContentScale.Crop,
+            alpha = 0.22f,
+        )
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)))
+
+        Column(Modifier.fillMaxSize().padding(horizontal = 64.dp, vertical = 28.dp)) {
+            // 顶栏
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TVSmallButton("返回", onClose)
+                Spacer(Modifier.weight(1f))
+                Text("正在播放", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.weight(1f))
+                TVSmallButton(if (showLyrics) "隐藏歌词" else "显示歌词") { showLyrics = !showLyrics }
+            }
+            Spacer(Modifier.height(16.dp))
+
+            // 封面 + 信息 + 歌词
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                AsyncImage(
+                    artwork, null,
+                    Modifier
+                        .size(340.dp)
+                        .align(Alignment.CenterVertically)
+                        .clip(RoundedCornerShape(18.dp))
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(18.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                Spacer(Modifier.width(48.dp))
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    Text(track.displayTitle, style = MaterialTheme.typography.headlineMedium,
+                        color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(track.displayArtist, style = MaterialTheme.typography.titleMedium,
+                        color = Color.White.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(4.dp))
+                    // 当前播放模式
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            when (playMode) {
+                                PlayMode.SEQUENTIAL -> Icons.Filled.Repeat
+                                PlayMode.REPEAT_ONE -> Icons.Filled.RepeatOne
+                                PlayMode.SHUFFLE -> Icons.Filled.Shuffle
+                            },
+                            null, tint = TVAccent, modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            when (playMode) {
+                                PlayMode.SEQUENTIAL -> "顺序播放"
+                                PlayMode.REPEAT_ONE -> "单曲循环"
+                                PlayMode.SHUFFLE -> "随机播放"
+                            },
+                            color = TVAccent, style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    if (showLyrics && lyricLines.isNotEmpty()) {
+                        LazyColumn(state = lyricState, modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            items(lyricLines, key = { it.index }) { line ->
+                                val active = line.index == lyricIndex
+                                Text(
+                                    line.text,
+                                    textAlign = TextAlign.Center,
+                                    fontSize = if (active) 24.sp else 18.sp,
+                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (active) TVAccent else Color.White.copy(alpha = 0.45f),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                )
+                            }
+                        }
+                    } else {
+                        // 没抓到歌词也给个明确说法，别让右侧空着像出错了
+                        Column(
+                            Modifier.weight(1f).fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(Icons.Filled.MusicNote, null,
+                                tint = Color.White.copy(alpha = 0.4f), modifier = Modifier.size(36.dp))
+                            Spacer(Modifier.height(8.dp))
+                            Text("暂无歌词", color = Color.White.copy(alpha = 0.45f),
+                                style = MaterialTheme.typography.bodyMedium)
                         }
                     }
-                } else {
-                    Spacer(Modifier.weight(1f))
                 }
             }
-        }
 
-        // 进度条
-        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(formatDuration(currentTime), color = Color.White.copy(alpha = 0.7f),
-                style = MaterialTheme.typography.labelLarge)
-            LinearProgressIndicator(
-                progress = { if (duration > 0) (currentTime / duration).toFloat().coerceIn(0f, 1f) else 0f },
-                modifier = Modifier.weight(1f).padding(horizontal = 16.dp).height(6.dp),
-                color = TVAccent,
-                trackColor = Color.White.copy(alpha = 0.15f),
-            )
-            Text(formatDuration(if (duration > 0) duration else null),
-                color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelLarge)
-        }
-
-        // 控制按钮（默认焦点在播放/暂停上）
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val playFocus = remember { FocusRequester() }
-            LaunchedEffect(track.id) { playFocus.requestFocus() }
-
-            TVControlButton(Icons.Filled.SkipPrevious, "上一首") { PlayerManager.playPrev() }
-            TVControlButton(Icons.Filled.FastRewind, "后退 10 秒") {
-                PlayerManager.seekTo((currentTime - 10.0).coerceAtLeast(0.0))
+            // 进度条
+            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(formatDuration(currentTime), color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.labelLarge)
+                LinearProgressIndicator(
+                    progress = { if (duration > 0) (currentTime / duration).toFloat().coerceIn(0f, 1f) else 0f },
+                    modifier = Modifier.weight(1f).padding(horizontal = 16.dp).height(6.dp),
+                    color = TVAccent,
+                    trackColor = Color.White.copy(alpha = 0.15f),
+                )
+                Text(formatDuration(if (duration > 0) duration else null),
+                    color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelLarge)
             }
-            FilledIconButton(
-                onClick = { PlayerManager.togglePlayPause() },
-                modifier = Modifier.size(96.dp).focusRequester(playFocus),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = TVAccent, contentColor = Color.White,
-                ),
+
+            // 控制按钮（默认焦点在播放/暂停上）
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, Modifier.size(44.dp))
+                val playFocus = remember { FocusRequester() }
+                LaunchedEffect(track.id) { playFocus.requestFocus() }
+
+                // 播放模式：顺序 → 单曲循环 → 随机
+                TVControlButton(
+                    when (playMode) {
+                        PlayMode.SEQUENTIAL -> Icons.Filled.Repeat
+                        PlayMode.REPEAT_ONE -> Icons.Filled.RepeatOne
+                        PlayMode.SHUFFLE -> Icons.Filled.Shuffle
+                    },
+                    when (playMode) {
+                        PlayMode.SEQUENTIAL -> "顺序播放"
+                        PlayMode.REPEAT_ONE -> "单曲循环"
+                        PlayMode.SHUFFLE -> "随机播放"
+                    },
+                ) { PlayerManager.cyclePlayMode() }
+                TVControlButton(Icons.Filled.SkipPrevious, "上一首") { PlayerManager.playPrev() }
+                TVControlButton(Icons.Filled.FastRewind, "后退 10 秒") {
+                    PlayerManager.seekTo((currentTime - 10.0).coerceAtLeast(0.0))
+                }
+                FilledIconButton(
+                    onClick = { PlayerManager.togglePlayPause() },
+                    modifier = Modifier.size(96.dp).focusRequester(playFocus),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = TVAccent, contentColor = Color.White,
+                    ),
+                ) {
+                    Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, Modifier.size(44.dp))
+                }
+                TVControlButton(Icons.Filled.FastForward, "前进 10 秒") {
+                    PlayerManager.seekTo(currentTime + 10.0)
+                }
+                TVControlButton(Icons.Filled.SkipNext, "下一首") { PlayerManager.playNext() }
             }
-            TVControlButton(Icons.Filled.FastForward, "前进 10 秒") {
-                PlayerManager.seekTo(currentTime + 10.0)
-            }
-            TVControlButton(Icons.Filled.SkipNext, "下一首") { PlayerManager.playNext() }
         }
     }
 }
