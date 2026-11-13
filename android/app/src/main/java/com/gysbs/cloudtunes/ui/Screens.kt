@@ -317,8 +317,8 @@ fun FolderBrowserDialog(
                     Text("当前：${current.name}", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(6.dp))
-                    OutlinedTextField(nameInput, { nameInput = it },
-                        label = { Text("库名称（可选）") }, modifier = Modifier.fillMaxWidth())
+                    InputField(nameInput, { nameInput = it },
+                        label = "库名称（可选）", modifier = Modifier.fillMaxWidth())
                 }
                 Spacer(Modifier.height(6.dp))
                 when {
@@ -404,8 +404,8 @@ fun SearchTab() {
     val results = remember(query) { LibraryStore.searchTracks(query) }
 
     Column(Modifier.fillMaxSize()) {
-        OutlinedTextField(query, { query = it },
-            label = { Text("搜索歌曲 / 歌手 / 专辑") },
+        InputField(query, { query = it },
+            label = "搜索歌曲 / 歌手 / 专辑",
             modifier = Modifier.fillMaxWidth().padding(16.dp), singleLine = true)
         LazyColumn {
             itemsIndexed(results, key = { _, r -> r.second.id }) { idx, (lib, t) ->

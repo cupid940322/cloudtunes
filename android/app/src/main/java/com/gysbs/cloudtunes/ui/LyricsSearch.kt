@@ -88,12 +88,13 @@ fun LyricsSearchDialog(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
+                    InputField(
                         value = query,
                         onValueChange = { query = it },
+                        label = "搜索关键词",
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        placeholder = { Text("歌手 歌名", color = Color.White.copy(alpha = 0.35f), fontSize = 14.sp) },
+                        placeholder = "歌手 歌名",
                         textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 15.sp),
                     )
                     IconButton(onClick = { doSearch(query) }) {

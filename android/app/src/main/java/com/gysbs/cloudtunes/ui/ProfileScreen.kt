@@ -262,7 +262,7 @@ private fun GitHubCard() {
                 ) { Text("查看已有令牌（找不到时重新生成）") }
 
                 if (showTokenField) {
-                    OutlinedTextField(token, { token = it }, label = { Text("GitHub Token（ghp_ 开头）") },
+                    InputField(token, { token = it }, label = "GitHub Token（ghp_ 开头）",
                         modifier = Modifier.fillMaxWidth(), singleLine = true)
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     Button(enabled = token.isNotBlank() && !busy, onClick = {
@@ -341,10 +341,10 @@ private fun GuangyaLoginDialog(onDismiss: () -> Unit) {
         title = { Text("登录光鸭云盘（短信验证码）") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(phone, { phone = it }, label = { Text("手机号（+86 前缀，如 +8613800138000）") },
+                InputField(phone, { phone = it }, label = "手机号（+86 前缀，如 +8613800138000）",
                     singleLine = true, modifier = Modifier.fillMaxWidth())
                 if (vid != null) {
-                    OutlinedTextField(code, { code = it }, label = { Text("短信验证码") },
+                    InputField(code, { code = it }, label = "短信验证码",
                         singleLine = true, modifier = Modifier.fillMaxWidth())
                 }
                 if (busy && vid == null) Text("验证码发送中…")
@@ -389,8 +389,8 @@ private fun QuarkLoginDialog(onDismiss: () -> Unit) {
                 Text("电脑浏览器打开 pan.quark.cn 并登录 → F12 → 网络 → 任一请求 → 复制完整 Cookie 粘到下面。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(cookie, { cookie = it }, label = { Text("Cookie（含 __puus）") },
-                    modifier = Modifier.fillMaxWidth(), minLines = 3)
+                InputField(cookie, { cookie = it }, label = "Cookie（含 __puus）",
+                    modifier = Modifier.fillMaxWidth(), singleLine = false, minLines = 3)
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (busy) Text("验证中…")
             }
@@ -429,9 +429,9 @@ private fun BaiduLoginDialog(onDismiss: () -> Unit) {
         title = { Text("登录百度网盘（开放平台）") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(appKey, { appKey = it }, label = { Text("AppKey") },
+                InputField(appKey, { appKey = it }, label = "AppKey",
                     singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(secretKey, { secretKey = it }, label = { Text("SecretKey") },
+                InputField(secretKey, { secretKey = it }, label = "SecretKey",
                     singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(onClick = {
                     BaiduProvider.setAppKey(appKey.trim())
@@ -445,7 +445,7 @@ private fun BaiduLoginDialog(onDismiss: () -> Unit) {
                     }
                 }) { Text("① 打开授权页（浏览器）") }
                 Text("② 授权后在页面显示授权码，粘贴到下面", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(code, { code = it }, label = { Text("授权码") },
+                InputField(code, { code = it }, label = "授权码",
                     singleLine = true, modifier = Modifier.fillMaxWidth())
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (busy) Text("换取 token 中…")
