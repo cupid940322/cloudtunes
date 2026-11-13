@@ -503,9 +503,116 @@ class PlaybackService : MediaSessionService() {
         /// 通知渠道 / 通知 ID：自己建渠道，避免媒体通知被 ROM 默认塞进低优先级而锁屏不显示
         const val CHANNEL_ID = "cloudtunes.playback"
         const val NOTIFICATION_ID = 1001
+
+        /// 兜底通知上的按钮动作（服务内处理，不额外注册广播接收器）
+        const val ACTION_PREV = "com.gysbs.cloudtunes.action.PREV"
+        const val ACTION_TOGGLE = "com.gysbs.cloudtunes.action.TOGGLE"
+        const val ACTION_NEXT = "com.gysbs.cloudtunes.action.NEXT"
     }
 
     private var mediaSession: MediaSession? = null
+
+    /// 自己连一个 controller：media3 只有在 onGetSession 被调用（有 controller 连入）后才把
+    /// 会话纳入通知管理；而我们的 UI 是直接操作 ExoPlayer、从不起 controller，
+    /// 这很可能就是「通知栏/锁屏一直没有媒体卡片」的根因。
+    private var selfController: com.google.common.util.concurrent.ListenableFuture<androidx.media3.session.MediaController>? = null
+
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var fallbackPosted = false
+
+    /// 播放状态变化时刷新兜底通知（media3 自己发出来时这条只是备份）
+    private val notificationListener = object : Player.Listener {
+        override fun onIsPlayingChanged(playing: Boolean) {
+            if (fallbackPosted) postOwnNotification()
+            scheduleFallbackCheck(1500)
+        }
+
+        override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+            if (fallbackPosted) postOwnNotification()
+        }
+    }
+
+    private val fallbackCheck = Runnable {
+        try {
+            val p = PlayerManager.player ?: return@Runnable
+            if (!p.isPlaying) return@Runnable
+            if (!mediaNotificationExists()) {
+                // media3 没发出来：自己发一条 MediaStyle 通知并进前台，保证锁屏有控件
+                postOwnNotification()
+                fallbackPosted = true
+                CrashLog.record("媒体通知", "媒体通知未出现，已自行发布兜底通知")
+            }
+        } catch (t: Throwable) {
+            CrashLog.record("兜底媒体通知", t)
+        }
+    }
+
+    private fun scheduleFallbackCheck(delayMs: Long) {
+        mainHandler.removeCallbacks(fallbackCheck)
+        mainHandler.postDelayed(fallbackCheck, delayMs)
+    }
+
+    /// 通知栏里是否已有我们的媒体通知
+    private fun mediaNotificationExists(): Boolean = try {
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        nm?.activeNotifications?.any { it.id == NOTIFICATION_ID } ?: false
+    } catch (t: Throwable) {
+        false
+    }
+
+    /// 自行构建并发布媒体通知（MediaStyle + 会话 Token，系统会把它当媒体控件显示在锁屏上）
+    private fun postOwnNotification() {
+        try {
+            val p = PlayerManager.player ?: return
+            val token = mediaSession?.platformToken ?: return
+            val track = PlayerManager.currentTrack
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            val contentPi = launchIntent?.let {
+                android.app.PendingIntent.getActivity(
+                    this, 0, it,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+                )
+            }
+            fun action(iconRes: Int, title: String, actionName: String): android.app.Notification.Action {
+                val pi = android.app.PendingIntent.getService(
+                    this, actionName.hashCode(),
+                    android.content.Intent(this, PlaybackService::class.java).setAction(actionName),
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+                )
+                return android.app.Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, iconRes), title, pi
+                ).build()
+            }
+
+            val builder = android.app.Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentTitle(track?.displayTitle ?: "汤圆云音盒")
+                .setContentText(track?.displayArtist ?: "")
+                .setVisibility(android.app.Notification.VISIBILITY_PUBLIC)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .setOngoing(p.isPlaying)
+                .setStyle(
+                    android.app.Notification.MediaStyle()
+                        .setMediaSession(token)
+                        .setShowActionsInCompactView(0, 1, 2)
+                )
+                .addAction(action(android.R.drawable.ic_media_previous, "上一首", ACTION_PREV))
+                .addAction(
+                    action(
+                        if (p.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                        if (p.isPlaying) "暂停" else "播放",
+                        ACTION_TOGGLE,
+                    )
+                )
+                .addAction(action(android.R.drawable.ic_media_next, "下一首", ACTION_NEXT))
+            contentPi?.let { builder.setContentIntent(it) }
+
+            startForeground(NOTIFICATION_ID, builder.build())
+        } catch (t: Throwable) {
+            CrashLog.record("发布兜底媒体通知", t)
+        }
+    }
 
     /// 渠道只建一次；IMPORTANCE_LOW（不出声、不弹横幅）但明确允许锁屏显示
     private fun ensureChannel() {
@@ -569,6 +676,24 @@ class PlaybackService : MediaSessionService() {
             mediaSession = builder.build()
             sessionActive = mediaSession != null
             CrashLog.record("播放服务", "媒体会话就绪 sessionActive=$sessionActive")
+
+            // 关键：自连一个 controller，让 MediaSessionService 真正"认领"这个会话，
+            // 否则 media3 不会接管通知（锁屏/通知栏永远没有媒体控件）
+            try {
+                selfController = androidx.media3.session.MediaController
+                    .Builder(this, mediaSession!!.sessionToken)
+                    .buildAsync()
+            } catch (t: Throwable) {
+                CrashLog.record("连接媒体控制器", t)
+            }
+
+            // 监听播放状态：media3 没发通知时兜底自己发
+            try {
+                p.addListener(notificationListener)
+                scheduleFallbackCheck(3000)
+            } catch (t: Throwable) {
+                CrashLog.record("注册通知监听", t)
+            }
         } catch (t: Throwable) {
             // 媒体会话建不起来只是没有通知栏控件，绝不能让 App 起不来
             CrashLog.record("PlaybackService 初始化", t)
@@ -576,6 +701,12 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
+        // 兜底通知上的按钮（上一首/播放暂停/下一首）
+        when (intent?.action) {
+            ACTION_PREV -> { PlayerManager.playPrev(); return START_STICKY }
+            ACTION_NEXT -> { PlayerManager.playNext(); return START_STICKY }
+            ACTION_TOGGLE -> { PlayerManager.togglePlayPause(); return START_STICKY }
+        }
         // 服务被重新拉起（或上次会话没建成）时补建会话，然后交给 media3 正常处理
         buildSessionIfNeeded()
         return try {
@@ -617,6 +748,14 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        try {
+            mainHandler.removeCallbacks(fallbackCheck)
+            PlayerManager.player?.removeListener(notificationListener)
+            selfController?.let { f -> runCatching { if (f.isDone) f.get().release() } }
+            selfController = null
+        } catch (t: Throwable) {
+            CrashLog.record("释放通知资源", t)
+        }
         try {
             mediaSession?.release()
         } catch (t: Throwable) {
