@@ -299,12 +299,18 @@ object Scraper {
     /// 兜底：正着搜不到时把「歌名/歌手」交换再搜一轮——「歌名--歌手」这类倒序
     /// 命名解析出来是反的，交换后往往能对上；命中且分数 ≥0.75 才采用。
     suspend fun bestMatch(title: String, artist: String?, artistHint: String? = null): Match? {
-        val hit = bestMatchOnce(title, artist, artistHint)
-        if (hit != null) return hit
+        val forward = bestMatchOnce(title, artist, artistHint)
         val a = artist?.trim()
         val t = title.trim()
-        if (a.isNullOrEmpty() || a == t) return null
-        return bestMatchOnce(a, t, artistHint)?.takeIf { it.score >= 0.75 }
+        if (a.isNullOrEmpty() || a == t) return forward
+        // 正着已经很有把握就不折腾，避免把对的改错
+        if ((forward?.score ?: 0.0) >= 0.90) return forward
+        // 反着再来一次：「理想三旬--陈鸿宇」这类「歌名--歌手」倒序命名。
+        // 不能只在 forward==null 时才试——正着也可能凑到一个刚过阈值的错位结果。
+        val swapped = bestMatchOnce(a, t, artistHint) ?: return forward
+        if (swapped.score < 0.75) return forward
+        // 必须明显更优才采用，防止同分抖动
+        return if (swapped.score > (forward?.score ?: 0.0) + 0.05) swapped else forward
     }
 
     private suspend fun bestMatchOnce(title: String, artist: String?, artistHint: String?): Match? {
