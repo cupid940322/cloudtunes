@@ -1061,6 +1061,21 @@ struct EditTrackSheet: View {
                     }
                     .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
 
+                    // 兜底：文件名是「歌名--歌手」这类倒序命名时解析会反，一键对调
+                    HStack {
+                        Button {
+                            let t = title
+                            title = artist
+                            artist = t
+                        } label: {
+                            Label("交换歌名 / 歌手", systemImage: "arrow.left.arrow.right")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        Text("识别反了点这里").font(.caption2).foregroundStyle(.tertiary)
+                    }
+
                     Button {
                         searchOnline()
                     } label: {

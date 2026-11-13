@@ -82,19 +82,22 @@ enum MetadataScraper {
         let queryArtist = (result.artist?.isEmpty == false)
             ? result.artist
             : (hintArtist?.isEmpty == false ? hintArtist : fallbackArtist)
+        // 查询词里不能带「-陈鸿宇」这类悬挂分隔符残渣，否则交换兜底也会被污染
+        let cleanQueryTitle = stripDangling(queryTitle)
+        let cleanQueryArtist = queryArtist.map(stripDangling)
         // 目录推断出的歌手作为「约束」：候选歌手对不上就扣分，压掉同名不同人
         let artistHint = hintArtist?.trimmingCharacters(in: .whitespaces)
 
-        if needOnline, !queryTitle.isEmpty {
-            var match = await MusicSearchService.bestMatch(title: queryTitle,
-                                                           artist: queryArtist,
+        if needOnline, !cleanQueryTitle.isEmpty {
+            var match = await MusicSearchService.bestMatch(title: cleanQueryTitle,
+                                                           artist: cleanQueryArtist,
                                                            artistHint: artistHint)
 
             // 「歌名-歌手」倒序文件名：正着匹配不到就反过来再试一次
             var didSwap = false
-            if match == nil, let swappedTitle = queryArtist, !swappedTitle.isEmpty {
+            if match == nil, let swappedTitle = cleanQueryArtist, !swappedTitle.isEmpty {
                 if let alt = await MusicSearchService.bestMatch(title: swappedTitle,
-                                                                artist: queryTitle,
+                                                                artist: cleanQueryTitle,
                                                                 artistHint: artistHint) {
                     match = alt
                     didSwap = true
@@ -138,7 +141,7 @@ enum MetadataScraper {
                     }
                     // 标题：内嵌有值绝不覆盖；否则要求与在线标题高度一致才替换
                     if embeddedTitle?.isEmpty ?? true, let t = info.title, !t.isEmpty {
-                        if TextMatch.similarity(queryTitle, t) >= 0.80 {
+                        if TextMatch.similarity(cleanQueryTitle, t) >= 0.80 {
                             result.title = t
                         }
                     }
@@ -167,6 +170,11 @@ enum MetadataScraper {
     /// 手动匹配用：多源（网易云 / QQ音乐 / iTunes）聚合，按置信度排序
     static func searchCandidates(title: String, artist: String?) async -> [MusicSearchService.SongInfo] {
         await MusicSearchService.rankedCandidates(title: title, artist: artist)
+    }
+
+    /// 去掉首尾的悬挂分隔符（「-陈鸿宇」这类解析残渣不能进搜索词）
+    private static func stripDangling(_ s: String) -> String {
+        s.trimmingCharacters(in: CharacterSet(charactersIn: "-–—－_·").union(.whitespaces))
     }
 
     /// 仅封面的在线查找（换设备补封面兜底用）。

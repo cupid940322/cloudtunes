@@ -99,6 +99,10 @@ fun TrackRow(
                     menuOpen = false
                     scope.launch { LibraryStore.rescrapeTrack(lib.id, track.id) }
                 })
+                DropdownMenuItem(text = { Text("交换歌名 / 歌手") }, onClick = {
+                    menuOpen = false
+                    scope.launch { LibraryStore.swapTrackTitleArtist(lib.id, track.id) }
+                })
                 DropdownMenuItem(text = { Text("从库中删除") }, onClick = {
                     menuOpen = false
                     LibraryStore.deleteTrack(lib.id, track.id)

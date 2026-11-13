@@ -70,17 +70,27 @@ enum MusicScanner {
             }
 
             if !title.isEmpty {
-                let cleanedTitle = stripLeadingIndex(title).trimmingCharacters(in: .whitespaces)
+                let cleanedTitle = stripDanglingSep(stripLeadingIndex(title)).trimmingCharacters(in: .whitespaces)
                 return ParsedName(title: cleanedTitle.isEmpty ? title : cleanedTitle, artist: artist)
             }
         }
-        return ParsedName(title: cleaned, artist: nil)
+        return ParsedName(title: stripDanglingSep(cleaned), artist: nil)
     }
 
     static func parseTitle(_ filename: String) -> String { parse(filename).title }
     static func parseArtist(_ filename: String) -> String? { parse(filename).artist }
 
     // MARK: - 清洗
+
+    /// 需要从首尾去掉的杂字符。注意：CharacterSet(charactersIn:) 里相邻字符会变成
+    /// 区间（" -_" 是 0x20~0x5F，连数字大写字母一起吃掉），所以必须用 union 拼接。
+    private static let trimChars: CharacterSet = CharacterSet(charactersIn: " \t\r\n")
+        .union(CharacterSet(charactersIn: "-_·.、,，;；"))
+
+    /// 悬挂分隔符清理：「-陈鸿宇」「理想三旬-」这类残渣不能当歌名
+    private static func stripDanglingSep(_ s: String) -> String {
+        s.trimmingCharacters(in: CharacterSet(charactersIn: "-–—－_·").union(.whitespaces))
+    }
 
     /// 只去掉「格式/音质/来源」类标记，不动曲名本身（Live/伴奏/Remix 等要保留，否则会匹配到别的版本）
     private static let noiseWords: Set<String> = [
@@ -97,7 +107,7 @@ enum MusicScanner {
         s = stripLeadingIndex(s)
         // 去掉包裹整个名字的书名号/引号
         s = trimWrapping(s)
-        s = s.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n-_·.、,，;；"))
+        s = s.trimmingCharacters(in: trimChars)
         while s.contains("  ") { s = s.replacingOccurrences(of: "  ", with: " ") }
         return s.trimmingCharacters(in: .whitespaces)
     }
@@ -179,6 +189,10 @@ enum MusicScanner {
 
     // MARK: - 拆分「艺术家 - 标题」
 
+    private static func isSep(_ c: Character) -> Bool {
+        c == "-" || c == "_" || c == "—" || c == "－"
+    }
+
     private static func splitArtistTitle(_ base: String) -> (String, String)? {
         // 1) 带空格的常见分隔符，最可靠
         for sep in [" - ", " – ", " — ", " － ", " · ", " —"] {
@@ -188,13 +202,17 @@ enum MusicScanner {
                 if !left.isEmpty, !right.isEmpty { return (left, right) }
             }
         }
-        // 2) 无空格的 - _ —：只在有中文参与时拆，避免把 "Bling-Bling"、"Jay-Z" 拆坏
+        // 2) 无空格的 - _ —：只在有中文参与时拆，避免把 "Bling-Bling"、"Jay-Z" 拆坏。
+        //    连续分隔符（「歌名--歌手」）要整体当一条分界线，不能拆出 "-歌手" 残渣
         let chars = Array(base)
-        for i in chars.indices where i > 0 && i < chars.count - 1 {
-            let c = chars[i]
-            guard c == "-" || c == "_" || c == "—" || c == "－" else { continue }
+        var i = 1
+        while i < chars.count - 1 {
+            guard isSep(chars[i]) else { i += 1; continue }
+            var j = i
+            while j + 1 < chars.count, isSep(chars[j + 1]) { j += 1 }
             let left = String(chars[0..<i]).trimmingCharacters(in: .whitespaces)
-            let right = String(chars[(i + 1)...]).trimmingCharacters(in: .whitespaces)
+            let right = String(chars[(j + 1)...]).trimmingCharacters(in: .whitespaces)
+            i = j + 1
             guard !left.isEmpty, !right.isEmpty else { continue }
             let hasCJK = left.containsCJK || right.containsCJK
             guard hasCJK else { continue }
@@ -210,7 +228,7 @@ enum MusicScanner {
         a = a.replacingOccurrences(of: "^\\s*[\\[【（(][^\\]】）)]{0,8}[\\]】）)]\\s*",
                                    with: "", options: .regularExpression)
         // 去掉结尾的 " -" 残留
-        a = a.trimmingCharacters(in: CharacterSet(charactersIn: " -_·"))
+        a = a.trimmingCharacters(in: trimChars)
         guard !a.isEmpty else { return nil }
         // 纯数字或纯符号不是艺术家
         if a.allSatisfy({ !$0.isLetter && !$0.isNumber }) { return nil }

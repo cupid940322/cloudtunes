@@ -368,6 +368,30 @@ object LibraryStore {
         return true
     }
 
+    /// 手动修正兜底：「歌名--歌手」这类倒序命名解析出来是反的，一键对调歌名/歌手。
+    /// 没有歌手信息时无从对调，返回 false。
+    fun swapTrackTitleArtist(libraryID: String, trackID: String): Boolean {
+        val lib = library(libraryID) ?: return false
+        val idx = lib.tracks.indexOfFirst { it.id == trackID }
+        if (idx < 0) return false
+        val t = lib.tracks[idx]
+        val artist = t.artist?.trim()
+        if (artist.isNullOrEmpty()) return false
+        val updated = t.copy(
+            title = artist,
+            artist = t.title.trim(),
+            metaSource = "manual",
+            confidence = 1.0,
+            updatedAt = Instant.now(),
+        )
+        val libIdx = libraries.indexOfFirst { it.id == libraryID }
+        libraries[libIdx] = lib.copy(tracks = lib.tracks.toMutableList().also { it[idx] = updated },
+            updatedAt = Instant.now())
+        persist()
+        SyncService.scheduleSync("交换歌名歌手")
+        return true
+    }
+
     /// 手动匹配歌词：把用户从搜索结果里选中的网易云歌曲 ID 写回曲目。
     /// 只改 neteaseID（不动标题/歌手等元数据），下次取歌词会直接用这个 ID。
     fun setTrackNeteaseID(libraryID: String, trackID: String, neteaseID: Int): Boolean {

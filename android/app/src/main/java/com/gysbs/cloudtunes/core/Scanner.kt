@@ -48,11 +48,11 @@ object Scanner {
             }
 
             if (title.isNotEmpty()) {
-                val cleanedTitle = stripLeadingIndex(title).trim()
+                val cleanedTitle = stripDanglingSep(stripLeadingIndex(title)).trim()
                 return ParsedName(cleanedTitle.ifEmpty { title }, artist)
             }
         }
-        return ParsedName(cleaned, null)
+        return ParsedName(stripDanglingSep(cleaned), null)
     }
 
     fun parseTitle(filename: String): String = parse(filename).title
@@ -146,12 +146,18 @@ object Scanner {
                 if (left.isNotEmpty() && right.isNotEmpty()) return left to right
             }
         }
+        // 无空格分支：遇到分隔符时把连续的分隔符一并跳过——
+        // 「理想三旬--陈鸿宇」这种双连字符命名不能在第一个 - 处拆出 "-陈鸿宇"
         val chars = base.toCharArray()
-        for (i in 1 until chars.size - 1) {
-            val c = chars[i]
-            if (c != '-' && c != '_' && c != '—' && c != '－') continue
+        fun isSep(c: Char) = c == '-' || c == '_' || c == '—' || c == '－'
+        var i = 1
+        while (i < chars.size - 1) {
+            if (!isSep(chars[i])) { i++; continue }
+            var j = i
+            while (j + 1 < chars.size && isSep(chars[j + 1])) j++
             val left = String(chars, 0, i).trim()
-            val right = String(chars, i + 1, chars.size - i - 1).trim()
+            val right = String(chars, j + 1, chars.size - j - 1).trim()
+            i = j + 1
             if (left.isEmpty() || right.isEmpty()) continue
             if (!left.containsCJK() && !right.containsCJK()) continue
             if (left.length > 30 || right.length > 60) continue
@@ -159,6 +165,10 @@ object Scanner {
         }
         return null
     }
+
+    /// 悬挂分隔符清理：「-陈鸿宇」「理想三旬-」这类残渣不能当歌名
+    private fun stripDanglingSep(s: String): String =
+        s.trim { it == '-' || it == '–' || it == '—' || it == '－' || it == '_' || it == '·' || it == ' ' }
 
     private fun sanitizeArtist(raw: String): String? {
         var a = raw.trim()

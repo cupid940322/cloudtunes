@@ -295,8 +295,19 @@ object Scraper {
         return best
     }
 
-    /// 统一入口：网易云 → QQ音乐 → iTunes 逐级兜底（对齐 iOS bestMatch）
+    /// 统一入口：网易云 → QQ音乐 → iTunes 逐级兜底（对齐 iOS bestMatch）。
+    /// 兜底：正着搜不到时把「歌名/歌手」交换再搜一轮——「歌名--歌手」这类倒序
+    /// 命名解析出来是反的，交换后往往能对上；命中且分数 ≥0.75 才采用。
     suspend fun bestMatch(title: String, artist: String?, artistHint: String? = null): Match? {
+        val hit = bestMatchOnce(title, artist, artistHint)
+        if (hit != null) return hit
+        val a = artist?.trim()
+        val t = title.trim()
+        if (a.isNullOrEmpty() || a == t) return null
+        return bestMatchOnce(a, t, artistHint)?.takeIf { it.score >= 0.75 }
+    }
+
+    private suspend fun bestMatchOnce(title: String, artist: String?, artistHint: String?): Match? {
         val cleanTitle = title.trim()
         if (cleanTitle.isEmpty()) return null
 
