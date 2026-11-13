@@ -91,26 +91,12 @@ enum MetadataScraper {
         let artistHint = hintArtist?.trimmingCharacters(in: .whitespaces)
 
         if needOnline, !cleanQueryTitle.isEmpty {
-            var match = await MusicSearchService.bestMatch(title: cleanQueryTitle,
+            // 两方向匹配在 bestMatch 内部完成（正着搜不到就反着搜，取明显更优者）；
+            // swapped 标记方向被纠正过——倒序命名的歌名/歌手要整体采用在线结果
+            let match = await MusicSearchService.bestMatch(title: cleanQueryTitle,
                                                            artist: cleanQueryArtist,
                                                            artistHint: artistHint)
-
-            // 「歌名-歌手」倒序文件名：两个方向都试，取明显更优的那个。
-            // 只在「正着完全没命中」时才试反方向是不够的——正着也可能凑到一个
-            // 刚过阈值的错位结果（例如把「理想三旬--陈鸿宇」当成 歌名=陈鸿宇、
-            // 歌手=理想三旬 去搜，仍能命中同一首歌），那就永远不会纠正方向。
-            var didSwap = false
-            if let swappedTitle = cleanQueryArtist, !swappedTitle.isEmpty,
-               (match?.score ?? 0) < 0.90 {
-                if let alt = await MusicSearchService.bestMatch(title: swappedTitle,
-                                                                artist: cleanQueryTitle,
-                                                                artistHint: artistHint),
-                   alt.score >= 0.75,
-                   alt.score > (match?.score ?? 0) + 0.05 {
-                    match = alt
-                    didSwap = true
-                }
-            }
+            let didSwap = match?.swapped ?? false
 
             if let match {
                 let info = match.info

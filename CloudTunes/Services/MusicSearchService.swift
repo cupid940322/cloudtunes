@@ -26,6 +26,9 @@ enum MusicSearchService {
     struct Match {
         var info: SongInfo
         var score: Double
+        /// 方向是否被纠正过（歌名/歌手交换后命中的）——
+        /// 调用方需要用它决定是否整体采用在线结果的歌名/歌手
+        var swapped: Bool = false
     }
 
     private static let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
@@ -366,8 +369,29 @@ enum MusicSearchService {
     ///   ② 网易云没有可信结果 → QQ音乐（补大厂版权，如周杰伦）
     ///   ③ 还没有 → iTunes（补欧美/外语专辑封面）
     /// 任何一级达标就收工，次源只在主源确实没有时出场。
+    /// 统一入口：两方向都参与匹配，取明显更优的那个。
+    /// 「歌名--歌手」倒序命名解析出来是反的（title=陈鸿宇、artist=理想三旬），
+    /// 正着搜会得到低分/空结果——不能只正着搜，必须反着也搜一次。
+    /// 反方向需 ≥0.75 且比正方向高 0.05 以上才采用，不会把本来就对的改错。
     static func bestMatch(title: String, artist: String?, artistHint: String? = nil,
                           minScore: Double? = nil) async -> Match? {
+        let forward = await bestMatchOnce(title: title, artist: artist,
+                                          artistHint: artistHint, minScore: minScore)
+        let a = (artist ?? "").trimmingCharacters(in: .whitespaces)
+        let t = title.trimmingCharacters(in: .whitespaces)
+        if a.isEmpty || a == t { return forward }
+        // 正着已经很有把握就不折腾
+        if (forward?.score ?? 0) >= 0.90 { return forward }
+        let swapped = await bestMatchOnce(title: a, artist: t, artistHint: artistHint)
+        guard var swappedMatch = swapped, swappedMatch.score >= 0.75 else { return forward }
+        guard swappedMatch.score > (forward?.score ?? 0) + 0.05 else { return forward }
+        swappedMatch.swapped = true
+        return swappedMatch
+    }
+
+    /// 单方向匹配：网易云 → QQ音乐 → iTunes 逐级兜底
+    private static func bestMatchOnce(title: String, artist: String?, artistHint: String? = nil,
+                                      minScore: Double? = nil) async -> Match? {
         let cleanTitle = title.trimmingCharacters(in: .whitespaces)
         guard !cleanTitle.isEmpty else { return nil }
 
