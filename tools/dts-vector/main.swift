@@ -33,6 +33,8 @@ func diffRatio(_ a: [Float]) -> Double {
 }
 
 let path = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "tools/dts-vector/vector.wav"
+let pcmPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ""
+var pcmOut = Data()
 guard let raw = FileManager.default.contents(atPath: path) else {
     print("ERR: 读不到 \(path)")
     exit(1)
@@ -89,6 +91,15 @@ while off + 64 <= end {
         continue
     }
     channelsSeen = planar.count
+    if !pcmPath.isEmpty {
+        let n = planar[0].count
+        for i in 0..<n {
+            for ch in 0..<planar.count {
+                var v = planar[ch][i]
+                withUnsafeBytes(of: &v) { pcmOut.append(contentsOf: $0) }
+            }
+        }
+    }
     if frameIndex < 40 {
         frameRms.append(planar.map(rms))
         frameDiffRatio.append(planar.map(diffRatio))
@@ -115,6 +126,10 @@ for i in 10..<min(30, frameRms.count) {
     var line = String(format: "  f%02d", i)
     for v in frameDiffRatio[i] { line += String(format: " %.6f", v) }
     print(line)
+}
+if !pcmPath.isEmpty {
+    try? pcmOut.write(to: URL(fileURLWithPath: pcmPath))
+    print("pcm written: \(pcmPath) \(pcmOut.count) bytes")
 }
 print("第 15 帧前 32 个样本:")
 for (i, s) in sampleFrame15.enumerated() {

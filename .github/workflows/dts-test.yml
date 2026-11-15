@@ -64,12 +64,14 @@ jobs:
           ls -la out
 
           echo "===== A: -fno-strict-aliasing ====="
-          ./out/fingerprintA tools/dts-vector/vector.wav
+          ./out/fingerprintA tools/dts-vector/vector.wav native.f32
           echo "===== B: 默认严格别名 ====="
           ./out/fingerprintB tools/dts-vector/vector.wav
           echo "===== A vs B diff（空 = 一致）====="
           ./out/fingerprintA tools/dts-vector/vector.wav > a.txt
           ./out/fingerprintB tools/dts-vector/vector.wav > b.txt
+          gzip -9 -c native.f32 > native.f32.gz
+          ls -la native.f32 native.f32.gz
           diff a.txt b.txt || true
           echo "===== DONE ====="
 
@@ -77,10 +79,11 @@ jobs:
         if: always()
         run: |
           cp dts.log dts-fingerprint.log || true
+          cp native.f32.gz native.f32.gz.bak || true
           git config user.name "ci"
           git config user.email "ci@local"
           git checkout --orphan ci-dts-tmp2
           git rm -rf --cached . >/dev/null 2>&1 || true
-          git add -f dts-fingerprint.log
+          git add -f dts-fingerprint.log native.f32.gz
           git commit -m "dts fingerprint log" || true
           git push -f origin HEAD:ci-dts-tmp
