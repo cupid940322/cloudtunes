@@ -1,0 +1,86 @@
+name: DTS decode fingerprint (offline check)
+
+# 只在 dts-test 分支跑：用和 iOS 版**完全相同**的编译标志，在 arm64 上
+# 把 libdca 0.0.7 + App 里的 DTSDecoder.swift 真跑一遍，打印解码指纹，
+# 再和本机 ffmpeg 的解码结果对比，判断"背景噪音"是不是解码器本身的问题。
+on:
+  push:
+    branches: [dts-test]
+  workflow_dispatch:
+
+jobs:
+  fingerprint:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build libdca (same flags as the app build)
+        run: |
+          set -euo pipefail
+          LIBDCA_VER=0.0.7
+          WORK="$RUNNER_TEMP/libdca"
+          rm -rf "$WORK"; mkdir -p "$WORK"
+          curl -fsSL "https://download.videolan.org/pub/videolan/libdca/${LIBDCA_VER}/libdca-${LIBDCA_VER}.tar.bz2" -o "$WORK/src.tar.bz2"
+          tar -xjf "$WORK/src.tar.bz2" -C "$WORK"
+          SRC="$WORK/libdca-${LIBDCA_VER}"
+          cp Libraries/libdca/config.h "$SRC/config.h"
+          mkdir -p Libraries/libdca/include
+          cp "$SRC/include/dca.h" Libraries/libdca/include/dca.h
+
+          # 用 macOS 的 arm64 目标（同架构、同编译器、同优化级别），
+          # 这样产出的 object 才能链进 macOS 命令行程序里跑
+          SDK=$(xcrun --sdk macosx --show-sdk-path)
+          # 两套：A = 加 -fno-strict-aliasing（Android 用这套），B = 不加（iOS 之前用这套）
+          for variant in A B; do
+            EXTRA=""
+            if [ "$variant" = "A" ]; then EXTRA="-fno-strict-aliasing"; fi
+            for f in bitstream downmix parse; do
+              xcrun --sdk macosx clang -arch arm64 -mmacosx-version-min=11.0 -isysroot "$SDK" \
+                -O2 -w -fno-common $EXTRA \
+                -I"$SRC" -I"$SRC/include" -I"$SRC/libdca" \
+                -c "$SRC/libdca/$f.c" -o "$WORK/$f.$variant.o"
+            done
+            /usr/bin/libtool -static -o "Libraries/libdca/libdca$variant.a" \
+              "$WORK/bitstream.$variant.o" "$WORK/downmix.$variant.o" "$WORK/parse.$variant.o"
+            lipo -info "Libraries/libdca/libdca$variant.a"
+          done
+
+      - name: Build fingerprint tools (Swift, links libdca A / B)
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for variant in A B; do
+            swiftc -O \
+              -import-objc-header CloudTunes/CloudTunes-Bridging-Header.h \
+              -Xcc -ILibraries/libdca/include \
+              CloudTunes/Player/DTSDecoder.swift \
+              tools/dts-vector/main.swift \
+              "Libraries/libdca/libdca$variant.a" \
+              -o "out/fingerprint$variant"
+          done
+          ls -la out
+
+      - name: Run fingerprint (A: -fno-strict-aliasing)
+        run: |
+          set -euo pipefail
+          ./out/fingerprintA tools/dts-vector/vector.wav 2>&1 | tee fingerprintA.txt
+
+      - name: Run fingerprint (B: 默认严格别名)
+        run: |
+          set -euo pipefail
+          ./out/fingerprintB tools/dts-vector/vector.wav 2>&1 | tee fingerprintB.txt
+
+      - name: Diff A vs B
+        run: |
+          echo "===== A vs B 差异（空 = 完全一致）====="
+          diff fingerprintA.txt fingerprintB.txt || true
+
+      - name: Upload fingerprint
+        uses: actions/upload-artifact@v4
+        with:
+          name: dts-fingerprint
+          path: |
+            fingerprintA.txt
+            fingerprintB.txt
+          retention-days: 7
+
