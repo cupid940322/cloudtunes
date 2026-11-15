@@ -64,9 +64,9 @@ var off = dataOff
 let end = dataOff + dataLen
 var frameIndex = 0
 var peak: Float = 0
-var sumDiffRatio: [Double] = []
 var frameRms: [[Double]] = []
-var firstSamples: [[Float]] = []
+var frameDiffRatio: [[Double]] = []
+var sampleFrame15: [[Float]] = []
 var badFrames = 0
 var channelsSeen = 0
 
@@ -89,17 +89,14 @@ while off + 64 <= end {
         continue
     }
     channelsSeen = planar.count
-    if frameIndex < 20 {
+    if frameIndex < 40 {
         frameRms.append(planar.map(rms))
-        if frameIndex == 0 {
-            firstSamples = planar.map { Array($0.prefix(24)) }
-        }
+        frameDiffRatio.append(planar.map(diffRatio))
     }
-    if frameIndex == 0 {
-        sumDiffRatio = planar.map { _ in 0 }
+    if frameIndex == 15 {
+        sampleFrame15 = planar.map { Array($0.prefix(32)) }
     }
     for i in 0..<planar.count {
-        if frameIndex < 25 { sumDiffRatio[i] += diffRatio(planar[i]) }
         for v in planar[i] where abs(v) > peak { peak = abs(v) }
     }
     off += frameBytes
@@ -107,19 +104,21 @@ while off + 64 <= end {
 }
 
 print("frames=\(frameIndex) bad=\(badFrames) channels=\(channelsSeen) peak=\(String(format: "%.5f", peak))")
-print("diffRatio(前25帧平均, 越大 = 高频噪声越多):")
-for (i, v) in sumDiffRatio.enumerated() {
-    print(String(format: "  ch%d %.6f", i, v / 25.0))
-}
-print("每帧 RMS（前 20 帧，行=帧，列=声道）:")
+print("每帧 RMS（.8f，行=帧，列=声道）：")
 for (i, row) in frameRms.enumerated() {
     var line = String(format: "  f%02d", i)
-    for v in row { line += String(format: " %.5f", v) }
+    for v in row { line += String(format: " %.8f", v) }
     print(line)
 }
-print("首帧前 24 个样本:")
-for (i, s) in firstSamples.enumerated() {
+print("逐帧 diffRatio（帧 10..29）：")
+for i in 10..<min(30, frameRms.count) {
+    var line = String(format: "  f%02d", i)
+    for v in frameDiffRatio[i] { line += String(format: " %.6f", v) }
+    print(line)
+}
+print("第 15 帧前 32 个样本:")
+for (i, s) in sampleFrame15.enumerated() {
     var line = String(format: "  ch%d", i)
-    for v in s { line += String(format: " %.6f", v) }
+    for v in s { line += String(format: " %.7f", v) }
     print(line)
 }
