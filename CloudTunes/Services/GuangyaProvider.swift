@@ -277,11 +277,30 @@ final class GuangyaProvider: CloudProvider {
     func streamURL(file: CloudFile) async throws -> (url: URL, headers: [String: String]) {
         let r = try await apiPost(path: "/nd.bizuserres.s/v1/get_res_download_url", body: ["fileId": file.id])
         guard let data = r["data"] as? [String: Any] else { throw CloudError.parse("取直链失败: \(r)") }
-        let s = data["signedURL"] as? String
-        let d = data["downloadURL"] as? String
-        guard let urlString = s ?? d, let url = URL(string: urlString) else {
+        // 两个候选都留着：signedURL 是预签名直链，downloadURL 是另一条入口，
+        // 前者失效时上层还有重新取一次直链的机会
+        let candidates = [data["signedURL"] as? String, data["downloadURL"] as? String]
+            .compactMap { $0 }
+            .compactMap { URL(string: $0) }
+        guard let url = candidates.first else {
             throw CloudError.parse("空下载直链")
         }
-        return (url, [:])
+        return (url, Self.mediaHeaders())
+    }
+
+    /// 直链（CDN）请求头。
+    ///
+    /// **为什么必须带**：光鸭返回的是签名直链，签名通常绑定 UA/Referer。
+    /// 不带时 CDN 不会老老实实回 403，而是直接把连接掐掉 —— 客户端看到的就是
+    /// `URLError -1005`「网络连接已中断」，看起来像网络问题，实际是缺头。
+    ///
+    /// **为什么不带 Authorization**：预签名 URL 自己带了鉴权参数，
+    /// 再叠一个 Authorization 会让 OSS/S3 判定签名冲突（400）。
+    private static func mediaHeaders() -> [String: String] {
+        [
+            "User-Agent": userAgent,
+            "Referer": "https://www.guangyapan.com/",
+            "Accept": "*/*",
+        ]
     }
 }

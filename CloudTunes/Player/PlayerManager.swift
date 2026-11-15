@@ -621,8 +621,8 @@ final class PlayerManager: NSObject, ObservableObject {
                     // 明确暂停，避免旧歌继续响造成「按了没反应」的错觉
                     self.player.pause()
                     self.isPlaying = false
-                    self.playNote = "播放失败：\(error.localizedDescription)"
-                    self.lyricSourceNote = "播放失败：\(error.localizedDescription)，请重试或重新登录网盘"
+                    self.playNote = "播放失败：\(Self.errorText(error))"
+                    self.lyricSourceNote = "播放失败：\(Self.errorText(error))，请重试或重新登录网盘"
                     self.updateNowPlaying()
                 }
             }
@@ -651,7 +651,7 @@ final class PlayerManager: NSObject, ObservableObject {
         // AVPlayer 对请求头极敏感（夸克少一个 Referer 就 403），失败就直接转本地缓存
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             guard item.status == .failed else { return }
-            let reason = item.error?.localizedDescription ?? "无法读取音频流"
+            let reason = item.error.map { Self.errorText($0) } ?? "无法读取音频流"
             // 不能在内层 Task 里直接用 weak self —— Swift 5.9 会报
             // `reference to captured var 'self' in concurrently-executing code`。
             // 这里先绑定成不可变的强引用 strongSelf 再捕获。
@@ -727,13 +727,26 @@ final class PlayerManager: NSObject, ObservableObject {
         watchdogTask?.cancel()
         playNote = "直链无法播放（\(reason)），正在缓存到本地…"
         fallbackTask?.cancel()
+        let trackProvider = ProviderRegistry.provider(kind: track.providerKind) ?? provider
         fallbackTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let local = try await StreamCache.localCopy(of: link.url,
+                var local: URL
+                do {
+                    // 先用当前直链整份拉（StreamCache 内部带断点续传）
+                    local = try await StreamCache.localCopy(of: link.url,
                                                             headers: link.headers,
                                                             key: track.id,
                                                             source: track.file.name)
+                } catch {
+                    // 直链本身已经死了（预签名 URL 有时效，个别网盘甚至一次性），
+                    // 用同一个 URL 重试多少次都没用 → 重新取一条新的直链再下
+                    let fresh = try await trackProvider.streamURL(file: track.file)
+                    local = try await StreamCache.localCopy(of: fresh.url,
+                                                            headers: fresh.headers,
+                                                            key: track.id,
+                                                            source: track.file.name)
+                }
                 await MainActor.run {
                     guard self.currentIndex == index else { return }
                     self.isFallingBack = false
@@ -752,12 +765,25 @@ final class PlayerManager: NSObject, ObservableObject {
                     self.isFallingBack = false
                     self.player.pause()
                     self.isPlaying = false
-                    self.playNote = "播放失败：\(error.localizedDescription)"
-                    self.lyricSourceNote = "播放失败：\(error.localizedDescription)"
+                    let text = "缓存下载失败：\(Self.errorText(error))"
+                    self.playNote = text
+                    self.lyricSourceNote = text
                     self.updateNowPlaying()
                 }
             }
         }
+    }
+
+    /// 把底层错误翻成带错误码的文本。
+    ///
+    /// iOS 的 `localizedDescription` 只会给一句「网络连接已中断」，看不出是 DNS、
+    /// 超时、还是 CDN 主动掐断（这三者的处理方式完全不同）。带上阶段和
+    /// `URLError` code，下次截图就能定位，不用再猜。
+    static func errorText(_ error: Error) -> String {
+        if let e = error as? URLError {
+            return "\(e.localizedDescription)（URLError \(e.errorCode)）"
+        }
+        return error.localizedDescription
     }
 
     func togglePlay() {
