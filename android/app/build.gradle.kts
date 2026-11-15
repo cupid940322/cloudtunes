@@ -11,6 +11,8 @@ val buildNumber: Int = (project.findProperty("buildNumber") as String?)?.toIntOr
 android {
     namespace = "com.gysbs.cloudtunes"
     compileSdk = 34
+    // AGP 8.5.2 的默认 NDK；写出来是为了让「为什么需要 NDK」一目了然
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "com.gysbs.cloudtunes"
@@ -18,6 +20,19 @@ android {
         targetSdk = 34
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
+
+        // DTS 解码（libdca）只编真机 ABI，省一半构建时间，APK 也不会胖太多
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    // DTS-in-WAV（DTS-CD 抓轨）系统没解码器，自带一份 libdca
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // 固定签名：CI 每次跑在全新 runner 上，自动生成的 debug keystore 每次都不一样，

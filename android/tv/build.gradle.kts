@@ -11,6 +11,8 @@ val buildNumber: Int = (project.findProperty("buildNumber") as String?)?.toIntOr
 android {
     namespace = "com.gysbs.cloudtunes.tv"
     compileSdk = 34
+    // 与 app 模块保持一致（DTS 解码需要 NDK）
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "com.gysbs.cloudtunes.tv"
@@ -18,6 +20,19 @@ android {
         targetSdk = 34
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
+
+        // DTS 解码（libdca）只编真机 ABI
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    // 与手机版共用同一份 native 源码：DTS-in-WAV 的解码器
+    externalNativeBuild {
+        cmake {
+            path = file("../app/src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // 复用 phone 模块的全部共享源码（core / player / App / phone UI），TV 只额外提供自己的入口

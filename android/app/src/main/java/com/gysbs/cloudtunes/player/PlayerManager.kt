@@ -94,6 +94,15 @@ object PlayerManager {
     private val shuffleHistory = mutableListOf<Int>()
 
     private var dataSourceFactory = HeaderedDataSourceFactory()
+
+    /// 提取器顺序很关键：DtsExtractor 必须排在 WavExtractor 前面。
+    /// 「DTS-CD 抓轨」的 WAV 头写着 PCM 16bit，被 WavExtractor 先拆就会当 PCM 播 → 一片噪音。
+    private val extractorsFactory: androidx.media3.extractor.ExtractorsFactory =
+        androidx.media3.extractor.ExtractorsFactory {
+            arrayOf<androidx.media3.extractor.Extractor>(DtsExtractor()) +
+                androidx.media3.extractor.DefaultExtractorsFactory().createExtractors()
+        }
+
     private var lyricJob: Job? = null
     private var timePollJob: Job? = null
     private var consecutiveFailures = 0
@@ -105,7 +114,10 @@ object PlayerManager {
         appContext = context.applicationContext
         try {
             val p = ExoPlayer.Builder(appContext)
-                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+                .setRenderersFactory(DtsRenderersFactory(appContext))
+                .setMediaSourceFactory(
+                    DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
+                )
                 .build()
             // WAKE_MODE_NETWORK 需要 android.permission.WAKE_LOCK。
             // 个别 ROM 会拒绝，抛 SecurityException 就直接放弃唤醒锁，不影响播放本身。
