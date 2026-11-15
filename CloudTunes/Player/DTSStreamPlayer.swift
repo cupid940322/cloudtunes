@@ -36,6 +36,15 @@ final class DTSStreamPlayer: NSObject {
     private var inputEnded = false
     private var finished = false
 
+    /// 是否已经真正开声（预缓冲攒够了才置真）
+    private var didStartPlayback = false
+    /// 第一块 PCM 进来的时刻，用来给预缓冲兜个底
+    private var playRequestedAt: Date?
+    /// 起播预缓冲时长：攒够这么久再 node.play()
+    private let preRollSeconds: Double = 1.5
+    /// 上一次进度采样看到的播放位置（主线程，判断供用）
+    private var lastPlayedSamples = 0
+
     // MARK: 解码（decodeQueue）
 
     private let decodeQueue = DispatchQueue(label: "cloudtunes.dts.decode", qos: .userInitiated)
@@ -94,6 +103,8 @@ final class DTSStreamPlayer: NSObject {
     private var scheduledSamples = 0
     private var playedSamples = 0
     private var requestedOffset = 0
+    /// 播放侧断供次数（0.25 秒采样里播放位置没动 = 至少卡了这么久）
+    private var underruns = 0
 
     private var progressTimer: Timer?
 
@@ -181,6 +192,7 @@ final class DTSStreamPlayer: NSObject {
         isPlaying = true
         try? AVAudioSession.sharedInstance().setActive(true)
         if !engine.isRunning { try? engine.start() }
+        didStartPlayback = true
         node.play()
         startProgressTimer()
     }
@@ -208,10 +220,14 @@ final class DTSStreamPlayer: NSObject {
         finished = false
         isPlaying = false
         duration = 0
+        didStartPlayback = false
+        playRequestedAt = nil
+        lastPlayedSamples = 0
         counterLock.lock()
         scheduledSamples = 0
         playedSamples = 0
         requestedOffset = 0
+        underruns = 0
         counterLock.unlock()
         decodeQueue.async { [weak self] in
             guard let self else { return }
@@ -549,15 +565,22 @@ final class DTSStreamPlayer: NSObject {
         }
     }
 
-    /// 出现过削顶就把真实峰值刷到播放页那行诊断上（1.5 秒最多一次）
+    /// 出现过削顶或播放断供就把真实情况刷到播放页那行诊断上（1.5 秒最多一次）。
+    /// 这两个数分别指向两类完全不同的毛病：
+    /// - `峰值/限幅` 说明**信号本身**越界（折下系数或原始母带问题）
+    /// - `断供` 说明**供给跟不上**（网络/解码/主线程调度），跟解码正确性无关
     private func reportDiagIfNeeded(_ decoder: DTSDecoder) {
-        guard limitedSamples > 0 else { return }
+        counterLock.lock(); let ur = underruns; counterLock.unlock()
+        guard limitedSamples > 0 || ur > 0 else { return }
         let now = Date()
         guard now.timeIntervalSince(lastDiagAt) > 1.5 else { return }
         lastDiagAt = now
-        let text = "DTS \(decoder.frameLength)B/帧 · \(decoder.sampleRate)Hz · "
-            + "\(layoutName(decoder.amode))→2ch · "
-            + String(format: "峰值%.2f·限幅%d", peakLevel, limitedSamples)
+        var text = "DTS \(decoder.frameLength)B/帧 · \(decoder.sampleRate)Hz · "
+            + "\(layoutName(decoder.amode))→2ch"
+        if limitedSamples > 0 {
+            text += String(format: " · 峰值%.2f·限幅%d", peakLevel, limitedSamples)
+        }
+        if ur > 0 { text += " · 断供\(ur)" }
         dispatchToMain { [weak self] in self?.onFormat?(text) }
     }
 
@@ -567,6 +590,13 @@ final class DTSStreamPlayer: NSObject {
 
     // MARK: - 调度（主线程）
 
+    /// 把一块 PCM 排进播放队列。
+    ///
+    /// **起播要先攒够 `preRollSeconds`**：边下边解是「来多少字节解多少帧」，
+    /// 网盘直链的分块投递本来就是一阵一阵的，网络抖动几个 50ms 就会让
+    /// AVAudioPlayerNode 断供。断供不会静音，它会在恢复时接上一段，听感就是
+    /// 「音乐在，但背景一直有细碎的杂音」—— 这正是历史上「远程流式=噪声、
+    /// 落盘播=正常」那次修复的本质：不是解码错，是供给不稳。
     private func enqueue(left: [Float], right: [Float], sampleRate: Double) {
         guard let fmt = ensureEngine(sampleRate: sampleRate),
               let buffer = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(left.count)) else { return }
@@ -576,12 +606,24 @@ final class DTSStreamPlayer: NSObject {
             right.withUnsafeBufferPointer { ch[1].update(from: $0.baseAddress!, count: right.count) }
         }
         if !engine.isRunning { try? engine.start() }
-        if !node.isPlaying, isPlaying { node.play() }
-        node.scheduleBuffer(buffer, completionHandler: nil)
 
         counterLock.lock()
         scheduledSamples += left.count
+        let scheduledAfter = scheduledSamples
         counterLock.unlock()
+
+        if !node.isPlaying, isPlaying, !didStartPlayback {
+            if playRequestedAt == nil { playRequestedAt = Date() }
+            let waited = playRequestedAt.map { Date().timeIntervalSince($0) } ?? 0
+            let need = Int(fmt.sampleRate * preRollSeconds)
+            // 网络太慢就别让用户干等：3 秒还没攒够就有什么放什么
+            if scheduledAfter >= need || waited > 3 || inputEnded {
+                didStartPlayback = true
+                node.play()
+            }
+        }
+
+        node.scheduleBuffer(buffer, completionHandler: nil)
         onReady?()
     }
 
@@ -603,7 +645,8 @@ final class DTSStreamPlayer: NSObject {
             return nil
         }
         engineReady = true
-        if isPlaying { node.play() }
+        // 注意：这里不能无条件 play，否则会绕过 enqueue 里的起播预缓冲
+        if isPlaying, didStartPlayback { node.play() }
         return fmt
     }
 
@@ -635,7 +678,14 @@ final class DTSStreamPlayer: NSObject {
         counterLock.lock()
         playedSamples = played
         let scheduled = scheduledSamples
+        // 断供检测：已经开声、还在播、队列里明明还有货，但播放位置一个样本都没走
+        // → 这 0.25 秒是音频引擎在空转，听感就是一声"顿/杂音"
+        if didStartPlayback, isPlaying, played > 0,
+           scheduled > played + 4096, played == lastPlayedSamples {
+            underruns += 1
+        }
         counterLock.unlock()
+        lastPlayedSamples = played
 
         let seconds = seekBase + Double(played) / fmt.sampleRate
         currentTime = seconds
@@ -659,6 +709,13 @@ final class DTSStreamPlayer: NSObject {
     private func finishWhenDrained() {
         guard !inputEnded else { return }
         inputEnded = true
+        // 短文件（或网络太慢刚够一两帧就断了）等不到预缓冲门槛，
+        // 数据流都结束了就直接开声，否则会一直卡在"准备播放"上不动
+        if !didStartPlayback, isPlaying {
+            didStartPlayback = true
+            if !engine.isRunning { try? engine.start() }
+            node.play()
+        }
         counterLock.lock()
         let scheduled = scheduledSamples
         counterLock.unlock()
