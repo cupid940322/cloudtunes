@@ -723,11 +723,16 @@ final class PlayerManager: NSObject, ObservableObject {
                                  link: (url: URL, headers: [String: String]),
                                  reason: String) {
         guard currentIndex == index, !isFallingBack else { return }
+        // fallbackToCache 不经过 playAt，拿不到调用方传的 provider，按曲目自己所属的网盘解析
+        guard let trackProvider = ProviderRegistry.provider(kind: track.providerKind) else {
+            isPlaying = false
+            playNote = "播放失败：\(track.providerKind.rawValue) 尚未登录"
+            return
+        }
         isFallingBack = true
         watchdogTask?.cancel()
         playNote = "直链无法播放（\(reason)），正在缓存到本地…"
         fallbackTask?.cancel()
-        let trackProvider = ProviderRegistry.provider(kind: track.providerKind) ?? provider
         fallbackTask = Task { [weak self] in
             guard let self else { return }
             do {
