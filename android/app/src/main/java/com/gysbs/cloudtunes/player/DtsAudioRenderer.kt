@@ -19,6 +19,8 @@ class DtsAudioRenderer(
     eventListener: AudioRendererEventListener?,
 ) : DecoderAudioRenderer<DtsDecoder>(eventHandler, eventListener) {
 
+    override fun getName(): String = "DtsAudioRenderer"
+
     override fun supportsFormatInternal(format: Format): Int {
         if (!DtsNative.available) return C.FORMAT_UNSUPPORTED_TYPE
         if (format.sampleMimeType != MimeTypes.AUDIO_DTS) return C.FORMAT_UNSUPPORTED_TYPE

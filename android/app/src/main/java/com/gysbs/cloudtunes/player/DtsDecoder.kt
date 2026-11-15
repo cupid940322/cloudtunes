@@ -49,6 +49,8 @@ class DtsDecoder : SimpleDecoder<DecoderInputBuffer, SimpleDecoderOutputBuffer, 
         setInitialInputBufferSize(16384)
     }
 
+    override fun getName(): String = "libdca"
+
     override fun createInputBuffer(): DecoderInputBuffer =
         DecoderInputBuffer(DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_NORMAL)
 
