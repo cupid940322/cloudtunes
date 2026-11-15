@@ -57,6 +57,14 @@ final class DTSStreamPlayer: NSObject {
     private var infoCaptured = false
     private var formatReported = false
 
+    // MARK: 折下 / 诊断（decodeQueue）
+
+    /// 折下之后观察到的峰值（>1 说明原信号本来就会削顶）
+    private var peakLevel: Float = 0
+    /// 被软限幅削掉过的样本数
+    private var limitedSamples = 0
+    private var lastDiagAt = Date.distantPast
+
     // MARK: 网络
 
     private lazy var session: URLSession = {
@@ -147,6 +155,9 @@ final class DTSStreamPlayer: NSObject {
             self.retryScheduled = false
             self.infoCaptured = false
             self.formatReported = false
+            self.peakLevel = 0
+            self.limitedSamples = 0
+            self.lastDiagAt = .distantPast
         }
 
         var req = URLRequest(url: url)
@@ -311,9 +322,10 @@ final class DTSStreamPlayer: NSObject {
             if let planar = decoder.decode(frame: frame) {
                 if !formatReported {
                     formatReported = true
-                    // 把采样率也显示出来：万一哪天又觉得"慢放"，一眼就能看出
-                    // 是解码器报错了率（数值不对）还是引擎侧的问题（数值正常但声音慢）
-                    let text = "DTS \(decoder.frameLength)B/帧 · \(decoder.sampleRate)Hz · \(planar[0].count) 样本 · \(decoder.outputChannels)ch"
+                    // 把采样率、原始布局都显示出来：万一哪天又觉得"慢放/有噪音"，
+                    // 一眼就能判断是解码器报错了率（数值不对）还是引擎侧的问题
+                    let text = "DTS \(decoder.frameLength)B/帧 · \(decoder.sampleRate)Hz · "
+                        + "\(decoder.samplesPerFrame)样本 · \(layoutName(decoder.amode))→2ch"
                     dispatchToMain { [weak self] in self?.onFormat?(text) }
                 }
                 accumulate(planar: planar, decoder: decoder)
@@ -405,9 +417,22 @@ final class DTSStreamPlayer: NSObject {
     }
 
     private func accumulate(planar: [[Float]], decoder: DTSDecoder) {
-        // 单声道源（amode=0）downmix 之后仍只有 1 个声道，复制一份当立体声
-        let right = planar.count > 1 ? planar[1] : planar[0]
-        accumulatorLeft.append(contentsOf: planar[0])
+        var (left, right) = foldToStereo(planar, amode: decoder.amode)
+
+        // 统计 + 软限幅（只削超过 0.95 的那一点，不做整体压限）
+        for i in left.indices {
+            let a = abs(left[i])
+            if a > peakLevel { peakLevel = a }
+        }
+        for i in right.indices {
+            let a = abs(right[i])
+            if a > peakLevel { peakLevel = a }
+        }
+        softLimit(&left)
+        softLimit(&right)
+        reportDiagIfNeeded(decoder)
+
+        accumulatorLeft.append(contentsOf: left)
         accumulatorRight.append(contentsOf: right)
 
         let sampleRate = Double(decoder.sampleRate)
@@ -421,6 +446,119 @@ final class DTSStreamPlayer: NSObject {
                 self?.enqueue(left: l, right: r, sampleRate: sampleRate)
             }
         }
+    }
+
+    // MARK: - 5.1 → 立体声折下
+
+    /// 源码流的声道布局（DTS 是 **C 开头**：C, L, R, Ls, Rs[, Cs]，
+    /// 和 WAV 的 L/R 顺序不一样，这一步不能省）
+    private func layoutName(_ amode: Int) -> String {
+        switch amode {
+        case 0: return "单声道"
+        case 1, 2, 3, 4: return "2.0"
+        case 5: return "3.0"
+        case 6: return "2.1"
+        case 7: return "3.1"
+        case 8: return "4.0"
+        case 9: return "5.1"
+        default: return "6.1"
+        }
+    }
+
+    /// 把 libdca 解出的原始声道折成两声道。
+    ///
+    /// **为什么不让 libdca 自己折**：0.0.7 的 `mix32to2` 把中置、环绕都按 **0 dB**
+    /// 直接相加（`state->clev = state->slev = 1`，源码里那行上面还留着
+    /// `/* FIME: channels mixing levels */`），而 `DCA_ADJUST_LEVEL` 算出来的补偿系数
+    /// 写进 `state->level` 之后**整份代码里没有任何地方读过它**。
+    /// 结果 5.1 折立体声会比原信号高出最多 3 倍（+9.5 dB）→ 必然削顶，
+    /// 听感就是「音乐在，但上面糊了一层噪音」。
+    ///
+    /// 标准做法（Dolby/DTS 折下惯例）：中置、环绕各 -3 dB，主声道保持 0 dB。
+    private func foldToStereo(_ planar: [[Float]], amode: Int) -> (l: [Float], r: [Float]) {
+        let n = planar.first?.count ?? 0
+        var l = [Float](repeating: 0, count: n)
+        var r = [Float](repeating: 0, count: n)
+        guard n > 0 else { return (l, r) }
+
+        let db3 = Float(0.7071067811865476)   // -3 dB
+        func ch(_ i: Int) -> [Float] { planar.indices.contains(i) ? planar[i] : [] }
+        func add(_ to: inout [Float], _ src: [Float], _ g: Float) {
+            guard src.count == n else { return }
+            for i in 0..<n { to[i] += src[i] * g }
+        }
+
+        // 解出来的声道数少于布局要求（极少见，例如 amode 与实际码流不符）时，
+        // 退回最简单的 L/R 直出 —— 否则某个 add 会被跳过，右声道整条静音
+        let expected: Int
+        switch amode {
+        case 0: expected = 1
+        case 1, 2, 3, 4: expected = 2
+        case 5, 6: expected = 3
+        case 7, 8: expected = 4
+        case 9: expected = 5
+        default: expected = 6
+        }
+        if planar.count < expected {
+            add(&l, ch(0), 1)
+            add(&r, planar.count > 1 ? ch(1) : ch(0), 1)
+            return (l, r)
+        }
+
+        switch amode {
+        case 0:                        // 单声道（只有中置）
+            add(&l, ch(0), 1); add(&r, ch(0), 1)
+        case 1, 2, 3, 4:               // 双声道 / 和差立体声：本身就是 L, R
+            add(&l, ch(0), 1)
+            add(&r, ch(1).isEmpty ? ch(0) : ch(1), 1)
+        case 5:                        // C, L, R
+            add(&l, ch(1), 1); add(&l, ch(0), db3)
+            add(&r, ch(2), 1); add(&r, ch(0), db3)
+        case 6:                        // L, R, S
+            add(&l, ch(0), 1); add(&l, ch(2), db3)
+            add(&r, ch(1), 1); add(&r, ch(2), db3)
+        case 7:                        // C, L, R, S
+            add(&l, ch(1), 1); add(&l, ch(0), db3); add(&l, ch(3), db3)
+            add(&r, ch(2), 1); add(&r, ch(0), db3); add(&r, ch(3), db3)
+        case 8:                        // L, R, Ls, Rs
+            add(&l, ch(0), 1); add(&l, ch(2), db3)
+            add(&r, ch(1), 1); add(&r, ch(3), db3)
+        case 9:                        // C, L, R, Ls, Rs —— DTS-CD 5.1 的标准布局
+            add(&l, ch(1), 1); add(&l, ch(0), db3); add(&l, ch(3), db3)
+            add(&r, ch(2), 1); add(&r, ch(0), db3); add(&r, ch(4), db3)
+        default:                       // 6.1 / 4F2R：多出来的后中置两边各给一半
+            add(&l, ch(1), 1); add(&l, ch(0), db3); add(&l, ch(3), db3)
+            add(&r, ch(2), 1); add(&r, ch(0), db3); add(&r, ch(4), db3)
+            if planar.count > 5 { add(&l, ch(5), 0.5); add(&r, ch(5), 0.5) }
+        }
+        return (l, r)
+    }
+
+    /// 软限幅：超过 0.95 的部分用 tanh 压到 1.0 以内。
+    /// 硬削顶会产生大量高次谐波（听起来就是"糊了一层噪音"），
+    /// 这里只在真的越界时轻轻压一下，0.95 以下完全不动。
+    private func softLimit(_ x: inout [Float]) {
+        for i in x.indices {
+            let v = x[i]
+            if v.isNaN { x[i] = 0; continue }
+            let a = abs(v)
+            if a <= 0.95 { continue }
+            let y = 0.95 + 0.05 * tanhf((a - 0.95) / 0.05)
+            x[i] = v < 0 ? -y : y
+            limitedSamples += 1
+        }
+    }
+
+    /// 出现过削顶就把真实峰值刷到播放页那行诊断上（1.5 秒最多一次）
+    private func reportDiagIfNeeded(_ decoder: DTSDecoder) {
+        guard limitedSamples > 0 else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastDiagAt) > 1.5 else { return }
+        lastDiagAt = now
+        let text = "DTS \(decoder.frameLength)B/帧 · \(decoder.sampleRate)Hz · "
+            + "\(layoutName(decoder.amode))→2ch · "
+            + String(format: "峰值%.2f·限幅%d", peakLevel, limitedSamples)
+        dispatchToMain { [weak self] in self?.onFormat?(text) }
     }
 
     private func dispatchToMain(_ work: @escaping () -> Void) {

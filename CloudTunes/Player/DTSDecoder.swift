@@ -10,9 +10,10 @@ import Foundation
 /// `dca_syncinfo` 也认识 `ff 1f 00 e8` 这个 14bit 小端同步模式。
 /// 所以原始字节直接喂进来就行，预先展开反而会破坏位流。
 ///
-/// 输出布局由 libdca 的 downmix 决定：我们请求立体声（`DCA_STEREO`），
-/// 5.1 源会被混成 2 声道；但单声道源（amode=0）请求立体声时仍只返回 1 声道，
-/// 所以每帧都要读回 `flags` 里的实际输出声道数，不能写死 2。
+/// **不再让 libdca 做 5.1→2ch 折下**（见 `decode` 的注释）：0.0.7 的 downmix
+/// 把中置/环绕按 0 dB 直接相加，折下后最多高出 9.5 dB，必然削顶，
+/// 听感就是「音乐在，但上面糊了一层噪音」。现在按原始布局解出全部声道，
+/// 折下交给 `DTSStreamPlayer.foldToStereo`，系数可按标准给。
 final class DTSDecoder {
     /// 每个 block 每声道的样本数（libdca 固定 256：8 subsubframe × 32）
     static let samplesPerBlock = 256
@@ -20,22 +21,35 @@ final class DTSDecoder {
     /// 但 bitstream 是 4 字节 4 字节读的，给 32 字节留足余量。
     static let headerSize = 32
 
-    /// 下面三个常量来自 libdca 的 dca.h，照抄一份避免 C 宏导入差异
-    private static let dcaStereoFlag: Int32 = 2          // DCA_STEREO
-    private static let dcaAdjustLevelFlag: Int32 = 0x100 // DCA_ADJUST_LEVEL
+    /// 帧缓冲前后各留一段垫子：
+    /// - 前 8 字节：`dca_bitstream_init` 会把指针向下对齐到 4 字节再读，
+    ///   对齐失败时会回读前面的字节。
+    /// - 后 32 字节：`bitstream_fill_current` 每次无条件读入一个 32bit 字，
+    ///   帧尾那一次可能读过帧边界；越过边界读到的是堆里的垃圾位，
+    ///   解出来正是一层高频「嘶嘶」噪声。
+    /// Android 的 JNI 包装（dts_jni.c）用的是同样的垫子，两边行为保持一致。
+    private static let padHead = 8
+    private static let padTail = 32
+
+    /// 下面两个常量来自 libdca 的 dca.h，照抄一份避免 C 宏导入差异
     /// dca.h 的 DCA_CHANNEL_MASK
     private static let channelMask = 0x3F
+    /// dca.h 的 DCA_CHANNEL_MAX（0.0.7 只做到 DCA_3F2R = 9）
+    private static let channelMax = 9
     /// tables.h 里的 dca_channels[]：output 值 → 声道数
     private static let channelCountTable = [1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 6, 6, 6, 7, 8, 8]
 
     private var state: OpaquePointer?
-    /// dca_bitstream_init 会把自己的指针对齐到 4 字节后往前退，可能读 buf 前面的字节。
-    /// 用它当「安全垫」：真正的头从 scratch[4] 开始，前面 4 字节随便读。
+    /// 帧头用的小缓冲（同样前面留垫子）
     private var scratch = [UInt8](repeating: 0, count: 64)
+    /// 帧数据缓冲（带前后垫子），长度不够时再扩
+    private var frameScratch = [UInt8](repeating: 0, count: 0)
 
     private(set) var sampleRate: Int = 44100
     private(set) var bitRate: Int = 0
-    /// 最近一帧的实际输出声道数（1 或 2；>2 说明 downmix 没生效）
+    /// 源码流的声道布局（amode，0=单声道 2=立体声 9=5.1 等）
+    private(set) var amode: Int = 2
+    /// 解出来的**原始**声道数（按 amode 布局，5.1 源就是 5，不含 LFE）
     private(set) var outputChannels: Int = 2
     /// 一帧的**字节数**（切帧用）
     private(set) var frameLength: Int = 0
@@ -70,26 +84,51 @@ final class DTSDecoder {
         guard byteCount > 0 else { return 0 }
         self.sampleRate = Int(sampleRate)
         self.bitRate = Int(bitRate)
+        self.amode = Int(f) & Self.channelMask
         self.frameLength = Int(byteCount)          // 字节数，切帧用这个
         self.samplesPerFrame = Int(samplesPerFrame) // 样本数，只做校验/诊断
         return Int(byteCount)
     }
 
-    /// 解一整帧，返回按声道分开的 float 样本（channel-major，每个声道 256×blocks 个）
+    /// 解一整帧，返回按声道分开的 float 样本（channel-major，每个声道 256×blocks 个）。
+    ///
+    /// 请求的是**源码流自己的布局**（`flags = amode`），libdca 就不会插手 downmix，
+    /// 5.1 源直接给出 C/L/R/Ls/Rs 五个声道，折下由上层按标准系数做。
     func decode(frame: [UInt8]) -> [[Float]]? {
         guard let state, !frame.isEmpty else { return nil }
-        var data = frame
-        // 请求立体声输出；ADJUST_LEVEL 让 5.1→2ch 的 downmix 不至于削顶
-        var f = Self.dcaStereoFlag | Self.dcaAdjustLevelFlag
+
+        // 拷进带垫子的缓冲：libdca 会无条件按 4 字节读，帧尾可能读过一个字
+        let need = frame.count + Self.padHead + Self.padTail
+        if frameScratch.count < need {
+            frameScratch = [UInt8](repeating: 0, count: need)
+        }
+        frameScratch.withUnsafeMutableBufferPointer { dst -> Void in
+            guard let base = dst.baseAddress else { return }
+            frame.withUnsafeBufferPointer { src -> Void in
+                guard let s = src.baseAddress else { return }
+                (base + Self.padHead).update(from: s, count: frame.count)
+            }
+            // 垫子清零（正常不该被读到，读到也只是 0）
+            for k in 0..<Self.padTail {
+                base[Self.padHead + frame.count + k] = 0
+            }
+        }
+
+        // amode 超出 0.0.7 支持范围（>9）就退回立体声，否则 dca_frame 会直接失败
+        let wanted = (0...Self.channelMax).contains(amode) ? amode : 2
+        var f = Int32(wanted)
         var level: Float = 1.0
         let bias: Float = 0
 
-        let result = data.withUnsafeMutableBufferPointer { ptr -> Int32 in
+        let result = frameScratch.withUnsafeMutableBufferPointer { ptr -> Int32 in
             guard let base = ptr.baseAddress else { return -1 }
-            var lvl = level
-            let r = dca_frame(state, base, &f, &lvl, bias)
-            level = lvl
-            return Int32(r)
+            let buf = base + Self.padHead
+            // 先过一次 syncinfo：`dca_frame` 用的是 state 里**上次解析留下的**
+            // word_mode / bigendian_mode，这里保证和当前这一帧一致
+            // （Android 的 JNI 也是这么做的，两边行为对齐）
+            var hf: Int32 = 0, sr: Int32 = 0, br: Int32 = 0, fl: Int32 = 0
+            guard dca_syncinfo(state, buf, &hf, &sr, &br, &fl) > 0 else { return -2 }
+            return Int32(dca_frame(state, buf, &f, &level, bias))
         }
         // dca_frame 返回 1 表示失败（例如 amode 超出 downmix 表范围）
         guard result == 0 else { return nil }
