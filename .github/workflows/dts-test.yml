@@ -3,6 +3,8 @@ name: DTS decode fingerprint (offline check)
 # 只在 dts-test 分支跑：用和 iOS 版**完全相同**的编译标志，在 arm64 上
 # 把 libdca 0.0.7 + App 里的 DTSDecoder.swift 真跑一遍，打印解码指纹，
 # 再和本机 ffmpeg 的解码结果对比，判断"背景噪音"是不是解码器本身的问题。
+#
+# 所有输出都 tee 到 dts.log，失败时把日志推到 ci-dts-tmp 分支（本机没有 gh，看不到 Actions 日志）。
 on:
   push:
     branches: [dts-test]
@@ -11,12 +13,17 @@ on:
 jobs:
   fingerprint:
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build libdca (same flags as the app build)
+      - name: Run everything (log captured)
         run: |
-          set -euo pipefail
+          set -o pipefail
+          exec > >(tee dts.log) 2>&1
+          set -x
+
           LIBDCA_VER=0.0.7
           WORK="$RUNNER_TEMP/libdca"
           rm -rf "$WORK"; mkdir -p "$WORK"
@@ -30,7 +37,6 @@ jobs:
           # 用 macOS 的 arm64 目标（同架构、同编译器、同优化级别），
           # 这样产出的 object 才能链进 macOS 命令行程序里跑
           SDK=$(xcrun --sdk macosx --show-sdk-path)
-          # 两套：A = 加 -fno-strict-aliasing（Android 用这套），B = 不加（iOS 之前用这套）
           for variant in A B; do
             EXTRA=""
             if [ "$variant" = "A" ]; then EXTRA="-fno-strict-aliasing"; fi
@@ -45,9 +51,6 @@ jobs:
             lipo -info "Libraries/libdca/libdca$variant.a"
           done
 
-      - name: Build fingerprint tools (Swift, links libdca A / B)
-        run: |
-          set -euo pipefail
           mkdir -p out
           for variant in A B; do
             swiftc -O \
@@ -60,27 +63,24 @@ jobs:
           done
           ls -la out
 
-      - name: Run fingerprint (A: -fno-strict-aliasing)
+          echo "===== A: -fno-strict-aliasing ====="
+          ./out/fingerprintA tools/dts-vector/vector.wav
+          echo "===== B: 默认严格别名 ====="
+          ./out/fingerprintB tools/dts-vector/vector.wav
+          echo "===== A vs B diff（空 = 一致）====="
+          ./out/fingerprintA tools/dts-vector/vector.wav > a.txt
+          ./out/fingerprintB tools/dts-vector/vector.wav > b.txt
+          diff a.txt b.txt || true
+          echo "===== DONE ====="
+
+      - name: Publish log to ci-dts-tmp branch
+        if: always()
         run: |
-          set -euo pipefail
-          ./out/fingerprintA tools/dts-vector/vector.wav 2>&1 | tee fingerprintA.txt
-
-      - name: Run fingerprint (B: 默认严格别名)
-        run: |
-          set -euo pipefail
-          ./out/fingerprintB tools/dts-vector/vector.wav 2>&1 | tee fingerprintB.txt
-
-      - name: Diff A vs B
-        run: |
-          echo "===== A vs B 差异（空 = 完全一致）====="
-          diff fingerprintA.txt fingerprintB.txt || true
-
-      - name: Upload fingerprint
-        uses: actions/upload-artifact@v4
-        with:
-          name: dts-fingerprint
-          path: |
-            fingerprintA.txt
-            fingerprintB.txt
-          retention-days: 7
-
+          cp dts.log dts-fingerprint.log || true
+          git config user.name "ci"
+          git config user.email "ci@local"
+          git checkout --orphan ci-dts-tmp2
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          git add -f dts-fingerprint.log
+          git commit -m "dts fingerprint log" || true
+          git push -f origin HEAD:ci-dts-tmp
