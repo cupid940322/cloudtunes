@@ -710,7 +710,8 @@ final class PlayerManager: NSObject, ObservableObject {
                   dataOffset: max(0, info.dataOffset),
                   dataBytes: info.dataBytes,
                   startAt: pendingSeek,
-                  fourteenBit: info.dts == .dts14)
+                  fourteenBit: info.dts == .dts14,
+                  sourceSampleRate: info.sampleRate)
         pendingSeek = 0
         updateNowPlaying()
         LibraryStore.shared.markPlayed(track.id)

@@ -76,6 +76,9 @@ final class DTSStreamPlayer: NSObject {
     /// 从码流里学到的「每秒字节数」，**跨 seek 保留**：拖动时还没解析到帧头，
     /// 全靠它把「秒」换算成字节偏移，否则每次拖动都从文件头重新下。
     private var knownByteRate = 0
+    /// 容器头（fmt）里声明的采样率。用来在还没解析到 DTS 帧头时先估算字节率，
+    /// 这样「继续播放」才能真的从上次的位置接着播，而不是从头放却把进度条放在中途。
+    private var sourceSampleRate = 0
 
     // MARK: 计数（锁）
 
@@ -93,14 +96,30 @@ final class DTSStreamPlayer: NSObject {
                dataOffset: Int,
                dataBytes: Int,
                startAt: TimeInterval = 0,
-               fourteenBit: Bool) {
+               fourteenBit: Bool,
+               sourceSampleRate: Int = 0) {
         stop()
 
         streamURL = url
         streamHeaders = headers
         self.dataOffset = max(0, dataOffset)
         self.dataBytes = max(0, dataBytes)
+        if sourceSampleRate > 0 { self.sourceSampleRate = sourceSampleRate }
+
+        // 还没解析到帧头时先估一个字节率，否则「继续播放」没法按时间定位：
+        // byteOffset 只能退回 dataOffset（从文件开头拉），但 seekBase 已经是上次的位置，
+        // 结果就是「声音从头放、进度条从中途走」—— 听起来就像慢放了一大截。
+        if knownByteRate == 0, self.sourceSampleRate > 0, fourteenBit {
+            // 14bit 打包：每个样本固定占 1 个 16bit 词 → 44.1k 立体声 = 176400 B/s
+            knownByteRate = self.sourceSampleRate * 2 * 2
+        }
+
         seekBase = max(0, startAt)
+        // 实在定不了位（例如 16bit 直排、字节率只能靠帧头给）就老老实实从头播，
+        // 至少让声音和进度条对齐，不能出现「声音落后进度」的假慢放
+        if seekBase > 0.5, knownByteRate == 0 {
+            seekBase = 0
+        }
         currentTime = seekBase
         isPlaying = true
 
@@ -162,7 +181,8 @@ final class DTSStreamPlayer: NSObject {
               dataOffset: dataOffset,
               dataBytes: dataBytes,
               startAt: seconds,
-              fourteenBit: fourteenBit)
+              fourteenBit: fourteenBit,
+              sourceSampleRate: sourceSampleRate)
     }
 
     func stop() {
@@ -291,7 +311,9 @@ final class DTSStreamPlayer: NSObject {
             if let planar = decoder.decode(frame: frame) {
                 if !formatReported {
                     formatReported = true
-                    let text = "DTS \(decoder.frameLength)B/帧 · \(planar[0].count) 样本 · \(decoder.outputChannels)ch"
+                    // 把采样率也显示出来：万一哪天又觉得"慢放"，一眼就能看出
+                    // 是解码器报错了率（数值不对）还是引擎侧的问题（数值正常但声音慢）
+                    let text = "DTS \(decoder.frameLength)B/帧 · \(decoder.sampleRate)Hz · \(planar[0].count) 样本 · \(decoder.outputChannels)ch"
                     dispatchToMain { [weak self] in self?.onFormat?(text) }
                 }
                 accumulate(planar: planar, decoder: decoder)
@@ -306,13 +328,23 @@ final class DTSStreamPlayer: NSObject {
     ///
     /// 只按「已调度样本」控制是不够的——解码头一停就不再往 AVAudioPlayerNode 里塞，
     /// 那边的水位永远上不去，下载会一路把整个文件拉进内存（一首 44MB 的 wav 直接吃掉 44MB）。
+    ///
+    /// 注意判断顺序：**先看是不是已经挂起**，只要低于阈值就立刻恢复。
+    /// 原来写成一个 if/else if，在 512KB~1MB 这段灰区里两边都不成立，
+    /// 挂起的下载会一直挂着，播放只能啃已有缓冲 —— 缓冲一干就是一段段静音，听着像慢放。
     private func applyBackpressure() {
+        if let s = suspendedTask {
+            if s.state != .suspended {
+                suspendedTask = nil
+            } else if remain < 512 << 10 {
+                s.resume()
+                suspendedTask = nil
+            }
+            return
+        }
         if remain > 1 << 20, let t = task, t.state == .running {
             t.suspend()
             suspendedTask = t
-        } else if remain < 512 << 10, let s = suspendedTask, s.state == .suspended {
-            s.resume()
-            suspendedTask = nil
         }
     }
 
@@ -332,7 +364,11 @@ final class DTSStreamPlayer: NSObject {
         }
         guard byteRate > 0 else { return }
         infoCaptured = true
-        if knownByteRate == 0 { knownByteRate = byteRate }
+        // 之前可能用容器头的采样率估过一个值（为了让「继续播放」能定位），
+        // 这里以帧头算出来的真实值为准；偏差超过 5% 就纠正过来
+        if knownByteRate == 0 || abs(knownByteRate - byteRate) > byteRate / 20 {
+            knownByteRate = byteRate
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.dataBytes > 0, self.duration == 0 else { return }
             let seconds = Double(self.dataBytes) / Double(byteRate)
@@ -355,6 +391,17 @@ final class DTSStreamPlayer: NSObject {
             self.retryScheduled = false
             self.pump()
         }
+    }
+
+    /// 播放侧发现缓冲快见底时来催一次（decodeQueue）：把挂起的下载恢复，再接着解码。
+    private func nudgeDownload() {
+        if let s = suspendedTask {
+            if s.state == .suspended {
+                s.resume()
+            }
+            suspendedTask = nil
+        }
+        pump()
     }
 
     private func accumulate(planar: [[Float]], decoder: DTSDecoder) {
@@ -455,6 +502,12 @@ final class DTSStreamPlayer: NSObject {
         let seconds = seekBase + Double(played) / fmt.sampleRate
         currentTime = seconds
         onTime?(seconds)
+
+        // 缓冲快见底又不是文件尾：可能是背压把下载挂起了，推一把，
+        // 否则播放器只能啃已有 buffer，一干就是几段静音，听着像慢放
+        if isPlaying, !inputEnded, scheduled - played < Int(fmt.sampleRate) {
+            decodeQueue.async { [weak self] in self?.nudgeDownload() }
+        }
 
         if inputEnded, !finished, scheduled > 0, played >= scheduled - 4096 {
             finished = true
