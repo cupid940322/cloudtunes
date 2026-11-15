@@ -72,13 +72,13 @@ class DtsExtractor : Extractor {
             val dataOffset = findDataChunk(scan, have)
             if (dataOffset != null) {
                 input.resetPeekPosition()
-                return looksLikeDts(scan, dataOffset + 8, have)
+                return findFirstFrame(scan, dataOffset, have)
             }
             // data chunk 还没出现，继续往后 peek
         }
         input.resetPeekPosition()
         val dataOffset = findDataChunk(scan, have) ?: return false
-        return looksLikeDts(scan, dataOffset + 8, have)
+        return findFirstFrame(scan, dataOffset, have)
     }
 
     override fun init(output: ExtractorOutput) {
@@ -165,19 +165,47 @@ class DtsExtractor : Extractor {
             }
         }
 
-        val head = ByteArray(32)
-        if (!input.peekFully(head, 0, 32, true)) return false
+        val window = scanWindow(input)
+        if (window < 32) return false
+        val scan = ByteArray(window)
+        val peeked = input.peekFully(scan, 0, window, true)
+        // peek 不满就只信前 32 字节（正常抓轨 sync 就在 data 起点）
+        val usable = if (peeked) window else 32
 
         val handle = DtsNative.nativeInit()
         if (handle == 0L) return false
-        val bytes = try {
-            DtsNative.nativeSyncInfo(handle, head, info)
+        var frameOffset = -1
+        var detected = 0
+        try {
+            var k = 0
+            while (k + 32 <= usable) {
+                if (looksLikeSyncHeader(scan, k)) {
+                    val head = scan.copyOfRange(k, k + 32)
+                    val bytes = DtsNative.nativeSyncInfo(handle, head, info)
+                    if (bytes > 0) {
+                        frameOffset = k
+                        detected = bytes
+                        break
+                    }
+                }
+                k++
+            }
         } finally {
             DtsNative.nativeFree(handle)
         }
-        if (bytes <= 0) return false
+        if (frameOffset < 0) return false
 
-        frameBytes = bytes
+        // 首帧不在 data 起点（个别抓轨前面有零头）：跳过零头，并把 dataStart 挪到帧边界上
+        if (frameOffset > 0) {
+            try {
+                input.skipFully(frameOffset)
+            } catch (t: Throwable) {
+                return false
+            }
+            dataStart += frameOffset
+        }
+
+        frameBytes = detected
         sampleRate = if (info[0] > 0) info[0] else 44100
         samplesPerFrame = if (info[2] > 0) info[2] else 1024
         // 用「帧字节数 × 帧率」算真实字节率，比帧头里的标称位率更可靠
@@ -214,16 +242,57 @@ class DtsExtractor : Extractor {
         return null
     }
 
-    /** data chunk 开头是不是 DTS 同步字 */
-    private fun looksLikeDts(buf: ByteArray, offset: Int, limit: Int): Boolean {
-        if (offset < 0 || offset + 32 > limit) return false
-        val head = buf.copyOfRange(offset, offset + 32)
-        return try {
-            DtsNative.nativeProbeFrameLength(head) > 0
-        } catch (t: Throwable) {
-            CrashLog.record("探测 DTS 同步字", t)
-            false
+    /**
+     * data 起点往后找第一帧。
+     * 正常抓轨的 sync 就在 data 起点，但个别文件前面有几个字节零头，所以往后扫最多 [SCAN_WINDOW]。
+     */
+    private fun findFirstFrame(buf: ByteArray, dataOffset: Int, limit: Int): Boolean {
+        val start = dataOffset + 8
+        if (start + 32 > limit) return false
+        val end = minOf(limit, start + SCAN_WINDOW)
+        var k = start
+        while (k + 32 <= end) {
+            if (looksLikeSyncHeader(buf, k)) {
+                return try {
+                    DtsNative.nativeProbeFrameLength(buf.copyOfRange(k, k + 32)) > 0
+                } catch (t: Throwable) {
+                    CrashLog.record("探测 DTS 同步字", t)
+                    false
+                }
+            }
+            k++
         }
+        return false
+    }
+
+    /** 从当前位置往后最多能看多少字节 */
+    private fun scanWindow(input: ExtractorInput): Int {
+        val total = input.length
+        if (total <= 0) return SCAN_WINDOW
+        val remain = total - input.position
+        if (remain <= 0) return 0
+        return remain.coerceAtMost(SCAN_WINDOW.toLong()).toInt()
+    }
+
+    /** libdca 认识的四种字节级同步模式（便宜的前置过滤，命中才调 native 校验） */
+    private fun looksLikeSyncHeader(b: ByteArray, o: Int): Boolean {
+        if (o < 0 || o + 6 > b.size) return false
+        val b0 = b[o].toInt() and 0xFF
+        val b1 = b[o + 1].toInt() and 0xFF
+        val b2 = b[o + 2].toInt() and 0xFF
+        val b3 = b[o + 3].toInt() and 0xFF
+        // 14bit 小端（DTS-CD 抓轨最常见）
+        if (b0 == 0xFF && b1 == 0x1F && b2 == 0x00 && b3 == 0xE8 &&
+            (b[o + 4].toInt() and 0xF0) == 0xF0 && b[o + 5].toInt() == 0x07
+        ) return true
+        // 14bit 大端
+        if (b0 == 0x1F && b1 == 0xFF && b2 == 0xE8 && b3 == 0x00 &&
+            b[o + 4].toInt() == 0x07 && (b[o + 5].toInt() and 0xF0) == 0xF0
+        ) return true
+        // 16bit 小端 / 大端
+        if (b0 == 0xFE && b1 == 0x7F && b2 == 0x01 && b3 == 0x80) return true
+        if (b0 == 0x7F && b1 == 0xFE && b2 == 0x80 && b3 == 0x01) return true
+        return false
     }
 
     private fun isRiffWave(buf: ByteArray): Boolean {
@@ -267,5 +336,7 @@ class DtsExtractor : Extractor {
 
     private companion object {
         const val MAX_SCAN = 64 * 1024
+        /** 找首帧时往后扫的最大字节数 */
+        const val SCAN_WINDOW = 4096
     }
 }
