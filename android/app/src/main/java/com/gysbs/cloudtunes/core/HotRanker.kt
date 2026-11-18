@@ -102,7 +102,7 @@ object HotRanker {
 
     /// 缓存 key：歌名 + 歌手同样归一化，让「晴天 (Live)」也能命中「晴天」
     fun cacheKey(title: String, artist: String?): String =
-        "${Scraper.normalize(title)}|${Scraper.normalize(artist ?: "")}"
+        "${TextMatch.normalize(title)}|${TextMatch.normalize(artist ?: "")}"
 
     fun score(title: String, artist: String?): Double? {
         loadIfNeeded()
@@ -257,7 +257,7 @@ object HotRanker {
         for (i in 0 until songs.length()) {
             val s = songs.optJSONObject(i) ?: continue
             val name = s.optString("name")
-            val sim = Scraper.similarity(title, name)
+            val sim = TextMatch.similarity(title, name)
             if (sim < 0.55) continue
             if (artist.isNotEmpty()) {
                 val ars = s.optJSONArray("ar")
@@ -265,7 +265,7 @@ object HotRanker {
                 if (ars != null) {
                     for (j in 0 until ars.length()) {
                         val n = ars.optJSONObject(j)?.optString("name") ?: continue
-                        if (Scraper.similarity(artist, n) >= 0.5) { hit = true; break }
+                        if (TextMatch.similarity(artist, n) >= 0.5) { hit = true; break }
                     }
                 }
                 if (!hit) continue
@@ -287,9 +287,9 @@ object HotRanker {
         var bestSim = 0.0
         var bestPlay = 0.0
         for (item in kuwoItems(text)) {
-            val sim = Scraper.similarity(title, item.name)
+            val sim = TextMatch.similarity(title, item.name)
             if (sim < 0.55) continue
-            if (artist.isNotEmpty() && Scraper.similarity(artist, item.artist) < 0.5) continue
+            if (artist.isNotEmpty() && TextMatch.similarity(artist, item.artist) < 0.5) continue
             val play = item.play.toDoubleOrNull() ?: continue
             if (sim > bestSim) { bestSim = sim; bestPlay = play }
         }
