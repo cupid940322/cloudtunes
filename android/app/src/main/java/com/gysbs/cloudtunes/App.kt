@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import com.gysbs.cloudtunes.core.CrashLog
 import com.gysbs.cloudtunes.core.CredentialStore
+import com.gysbs.cloudtunes.core.HotRanker
 import com.gysbs.cloudtunes.core.LibraryStore
 import com.gysbs.cloudtunes.core.SyncService
 import com.gysbs.cloudtunes.player.PlaybackService

@@ -35,13 +35,62 @@ enum MusicSearchService {
 
     // MARK: - 网易云搜索
 
-    /// 原始关键词搜索
+    /// 原始关键词搜索。
+    ///
+    /// **为什么换成 cloudsearch**：老的 `/api/search/get/web` 从 2026-11 起对
+    /// 「歌名 歌手」这类复合关键词一律返回 0 条（实测「晴天 周杰伦」「稻香 周杰伦」
+    /// 「素颜 许嵩」全挂），在线匹配整条报废。cloudsearch 正常返回，只是字段名
+    /// 换成了新版的 `ar` / `al` / `dt`；老接口保留作兜底。
     static func search(keyword: String, limit: Int = 8) async -> [SongInfo] {
         let trimmed = keyword.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return [] }
+        let cloud = await neteaseCloud(trimmed, limit: limit)
+        if !cloud.isEmpty { return cloud }
+        return await neteaseLegacy(trimmed, limit: limit)
+    }
+
+    /// cloudsearch（新版字段 ar / al / dt）
+    private static func neteaseCloud(_ kw: String, limit: Int) async -> [SongInfo] {
+        var comps = URLComponents(string: "https://music.163.com/api/cloudsearch/pc")!
+        comps.queryItems = [
+            .init(name: "s", value: kw),
+            .init(name: "type", value: "1"),
+            .init(name: "limit", value: "\(limit)"),
+            .init(name: "offset", value: "0"),
+        ]
+        guard let url = comps.url else { return [] }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8
+        req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        req.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = obj["result"] as? [String: Any],
+              let songs = result["songs"] as? [[String: Any]] else { return [] }
+
+        return songs.map { s in
+            let al = s["al"] as? [String: Any]
+            let ar = s["ar"] as? [[String: Any]]
+            var pic = al?["picUrl"] as? String
+            if let p = pic, p.hasPrefix("http://") { pic = "https://" + p.dropFirst(7) }
+            let ms = s["dt"] as? Double
+            return SongInfo(title: s["name"] as? String,
+                            artist: ar?.first?["name"] as? String,
+                            album: al?["name"] as? String,
+                            coverURL: pic,
+                            neteaseID: s["id"] as? Int,
+                            duration: ms.map { $0 / 1000 },
+                            source: "网易云")
+        }
+    }
+
+    /// 老接口（search/get/web，老字段 artists / album / duration）。
+    /// 现在对复合关键词多半返回 0 条，只在新接口异常时兜底。
+    private static func neteaseLegacy(_ keyword: String, limit: Int) async -> [SongInfo] {
         var comps = URLComponents(string: "https://music.163.com/api/search/get/web")!
         comps.queryItems = [
-            .init(name: "s", value: trimmed),
+            .init(name: "s", value: keyword),
             .init(name: "type", value: "1"),
             .init(name: "limit", value: "\(limit)"),
             .init(name: "offset", value: "0"),
@@ -405,22 +454,23 @@ enum MusicSearchService {
 
         func acceptable(_ m: Match?) -> Bool { (m?.score ?? 0) >= threshold }
 
-        // ① 网易云：先「歌手 + 歌名」，还不行再只用歌名
-        var best = pickBest(await search(keyword: kw, limit: 10),
+        // ① QQ 音乐：实测对「歌名 歌手」复合关键词质量最好，第一条基本就是正版
+        // （网易云的接口 2026-11 起对复合词要么 0 条、要么满屏翻唱，降为兜底）
+        var best = pickBest(await qqSearch(keyword: kw, limit: 10),
                             title: cleanTitle, artist: artist, artistHint: artistHint)
         if !acceptable(best), plain != kw {
-            if let alt = pickBest(await search(keyword: plain, limit: 10),
+            if let alt = pickBest(await qqSearch(keyword: plain, limit: 10),
                                   title: cleanTitle, artist: artist, artistHint: artistHint),
                alt.score > (best?.score ?? 0) {
                 best = alt
             }
         }
 
-        // ② QQ 音乐兜底（网易云丢了大厂版权时才走到这里）
+        // ② 网易云兜底（版权库不同，QQ 没有的这里可能有）
         if !acceptable(best) {
-            var pool = await qqSearch(keyword: kw, limit: 10)
+            var pool = await search(keyword: kw, limit: 10)
             if pool.isEmpty, plain != kw {
-                pool += await qqSearch(keyword: plain, limit: 10)
+                pool += await search(keyword: plain, limit: 10)
             }
             if let alt = pickBest(pool, title: cleanTitle, artist: artist, artistHint: artistHint),
                alt.score > (best?.score ?? 0) {
