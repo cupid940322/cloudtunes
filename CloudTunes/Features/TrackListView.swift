@@ -15,8 +15,10 @@ struct TrackListView: View {
     var clearAction: (() -> Void)? = nil
 
     @ObservedObject private var player = PlayerManager.shared
+    @ObservedObject private var hot = HotRanker.shared
     @State private var query = ""
     @State private var confirmClear = false
+    @State private var sortMode: TrackSortMode = .source
 
     private var filtered: [TrackRef] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -27,6 +29,10 @@ struct TrackListView: View {
                 || (item.track.album?.lowercased().contains(q) ?? false)
         }
     }
+
+    /// 搜索过滤之后再排序：列表、「播放全部」、「点第几首」三者必须用同一份数组，
+    /// 否则点了第 3 行放出来的是另一首
+    private var ordered: [TrackRef] { filtered.sortedRefs(sortMode) }
 
     private var totalDuration: Double {
         items.reduce(0) { $0 + ($1.track.duration ?? 0) }
@@ -41,6 +47,8 @@ struct TrackListView: View {
                                    title: query.isEmpty ? emptyTitle : "没找到「\(query)」",
                                    message: query.isEmpty ? emptyMessage : "换个关键词试试")
                 } else {
+                    TrackSortMenu(mode: $sortMode)
+                        .padding(.horizontal, Theme.pagePadding)
                     list
                 }
             }
@@ -63,6 +71,9 @@ struct TrackListView: View {
         .confirmationDialog("\(clearActionTitle ?? "清空")？", isPresented: $confirmClear) {
             Button("确定", role: .destructive) { clearAction?() }
             Button("取消", role: .cancel) {}
+        }
+        .task(id: sortMode) {
+            hot.prefetch(ordered.map { $0.track }, mode: sortMode)
         }
     }
 
@@ -140,13 +151,14 @@ struct TrackListView: View {
     // MARK: 列表
 
     private var list: some View {
-        LazyVStack(spacing: 0) {
-            ForEach(filtered.indices, id: \.self) { idx in
-                let item = filtered[idx]
+        let rows = ordered
+        return LazyVStack(spacing: 0) {
+            ForEach(rows.indices, id: \.self) { idx in
+                let item = rows[idx]
                 SongRow(track: item.track, library: item.library) {
                     play(at: idx)
                 }
-                if idx < filtered.count - 1 {
+                if idx < rows.count - 1 {
                     Divider().padding(.leading, 74)
                 }
             }
@@ -158,16 +170,18 @@ struct TrackListView: View {
     // MARK: 播放
 
     private func play(at index: Int) {
-        guard filtered.indices.contains(index) else { return }
-        let tracks = filtered.map { $0.track.toTrack(kind: $0.library.providerKind) }
-        guard let provider = ProviderRegistry.provider(kind: filtered[index].library.providerKind) else { return }
+        let rows = ordered
+        guard rows.indices.contains(index) else { return }
+        let tracks = rows.map { $0.track.toTrack(kind: $0.library.providerKind) }
+        guard let provider = ProviderRegistry.provider(kind: rows[index].library.providerKind) else { return }
         player.play(tracks: tracks, at: index, provider: provider)
     }
 
     private func playAll(shuffled: Bool) {
-        guard !items.isEmpty else { return }
-        let tracks = items.map { $0.track.toTrack(kind: $0.library.providerKind) }
-        guard let provider = ProviderRegistry.provider(kind: items[0].library.providerKind) else { return }
+        let rows = items.sortedRefs(sortMode)
+        guard !rows.isEmpty else { return }
+        let tracks = rows.map { $0.track.toTrack(kind: $0.library.providerKind) }
+        guard let provider = ProviderRegistry.provider(kind: rows[0].library.providerKind) else { return }
         player.setShuffled(shuffled)
         let start = shuffled ? Int.random(in: 0..<tracks.count) : 0
         player.play(tracks: tracks, at: start, provider: provider)

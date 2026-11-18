@@ -491,8 +491,10 @@ struct LibraryCard: View {
 struct LibraryDetailView: View {
     let libraryID: String
     @ObservedObject private var store = LibraryStore.shared
+    @ObservedObject private var hot = HotRanker.shared
     @State private var tab = 0
     @State private var confirmRescrape = false
+    @State private var sortMode: TrackSortMode = .source
 
     private var lib: MusicLibrary? { store.library(id: libraryID) }
 
@@ -628,19 +630,28 @@ struct LibraryDetailView: View {
     }
 
     private func songList(_ lib: MusicLibrary) -> some View {
-        LazyVStack(spacing: 0) {
-            ForEach(lib.tracks.indices, id: \.self) { idx in
-                            let t = lib.tracks[idx]
-                SongRow(track: t, library: lib) {
-                    play(lib: lib, tracks: lib.tracks, startAt: t.id)
-                }
-                if idx < lib.tracks.count - 1 {
-                    Divider().padding(.leading, 74)
+        let rows = hot.sorted(lib.tracks, by: sortMode)
+        return VStack(spacing: 10) {
+            TrackSortMenu(mode: $sortMode)
+                .padding(.horizontal, Theme.pagePadding)
+
+            LazyVStack(spacing: 0) {
+                ForEach(rows.indices, id: \.self) { idx in
+                    let t = rows[idx]
+                    SongRow(track: t, library: lib) {
+                        play(lib: lib, tracks: rows, startAt: t.id)
+                    }
+                    if idx < rows.count - 1 {
+                        Divider().padding(.leading, 74)
+                    }
                 }
             }
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .padding(.horizontal, Theme.pagePadding)
         }
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-        .padding(.horizontal, Theme.pagePadding)
+        .task(id: sortMode) {
+            hot.prefetch(rows, mode: sortMode)
+        }
     }
 
     private func albumGrid(_ lib: MusicLibrary) -> some View {

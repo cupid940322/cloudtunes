@@ -5,7 +5,9 @@ import SwiftUI
 struct FavoritesView: View {
     @ObservedObject private var store = LibraryStore.shared
     @ObservedObject private var player = PlayerManager.shared
+    @ObservedObject private var hot = HotRanker.shared
     @State private var query = ""
+    @State private var sortMode: TrackSortMode = .source
 
     private var allItems: [TrackRef] { store.favoriteTracks }
 
@@ -19,6 +21,9 @@ struct FavoritesView: View {
         }
     }
 
+    /// 列表与播放都用这一份，避免「点了第 3 行播另一首」
+    private var ordered: [TrackRef] { items.sortedRefs(sortMode) }
+
     private var totalDuration: Double {
         allItems.reduce(0) { $0 + ($1.track.duration ?? 0) }
     }
@@ -30,6 +35,8 @@ struct FavoritesView: View {
                 if items.isEmpty {
                     emptyState
                 } else {
+                    TrackSortMenu(mode: $sortMode)
+                        .padding(.horizontal, Theme.pagePadding)
                     list
                 }
             }
@@ -41,6 +48,9 @@ struct FavoritesView: View {
         .navigationTitle("我的收藏")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "搜索收藏的歌曲")
+        .task(id: sortMode) {
+            hot.prefetch(ordered.map { $0.track }, mode: sortMode)
+        }
     }
 
     // MARK: 顶部信息
@@ -116,13 +126,14 @@ struct FavoritesView: View {
     // MARK: 列表
 
     private var list: some View {
-        LazyVStack(spacing: 0) {
-            ForEach(items.indices, id: \.self) { idx in
-                let item = items[idx]
+        let rows = ordered
+        return LazyVStack(spacing: 0) {
+            ForEach(rows.indices, id: \.self) { idx in
+                let item = rows[idx]
                 SongRow(track: item.track, library: item.library) {
                     play(at: idx)
                 }
-                if idx < items.count - 1 {
+                if idx < rows.count - 1 {
                     Divider().padding(.leading, 74)
                 }
             }
@@ -142,16 +153,18 @@ struct FavoritesView: View {
     // MARK: 播放
 
     private func play(at index: Int) {
-        guard items.indices.contains(index) else { return }
-        let tracks = items.map { $0.track.toTrack(kind: $0.library.providerKind) }
-        guard let provider = ProviderRegistry.provider(kind: items[index].library.providerKind) else { return }
+        let rows = ordered
+        guard rows.indices.contains(index) else { return }
+        let tracks = rows.map { $0.track.toTrack(kind: $0.library.providerKind) }
+        guard let provider = ProviderRegistry.provider(kind: rows[index].library.providerKind) else { return }
         player.play(tracks: tracks, at: index, provider: provider)
     }
 
     private func playAll(shuffled: Bool) {
-        guard !items.isEmpty else { return }
-        let tracks = items.map { $0.track.toTrack(kind: $0.library.providerKind) }
-        guard let provider = ProviderRegistry.provider(kind: items[0].library.providerKind) else { return }
+        let rows = allItems.sortedRefs(sortMode)
+        guard !rows.isEmpty else { return }
+        let tracks = rows.map { $0.track.toTrack(kind: $0.library.providerKind) }
+        guard let provider = ProviderRegistry.provider(kind: rows[0].library.providerKind) else { return }
         player.setShuffled(shuffled)
         let start = shuffled ? Int.random(in: 0..<tracks.count) : 0
         player.play(tracks: tracks, at: start, provider: provider)
