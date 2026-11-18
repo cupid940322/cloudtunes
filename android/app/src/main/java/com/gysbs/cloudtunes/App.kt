@@ -32,6 +32,7 @@ class App : android.app.Application() {
         try {
             CredentialStore.init(this)
             LibraryStore.init(this)
+            HotRanker.init(this)
             SyncService.init(this)
         } catch (t: Throwable) {
             CrashLog.record("App 初始化", t)

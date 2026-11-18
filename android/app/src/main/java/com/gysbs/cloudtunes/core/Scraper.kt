@@ -135,10 +135,42 @@ object Scraper {
 
     // ── 网易云 ──
 
+    /// 网易云搜索。
+    ///
+    /// **为什么换成 cloudsearch**：老的 /api/search/get/web 从 2026-11 起对
+    /// 「歌名 歌手」复合关键词一律返回 0 条（晴天周杰伦/稻香周杰伦实测全挂），
+    /// 在线匹配整条报废。cloudsearch 正常返回，字段名换成了新版的 ar/al/dt；
+    /// 老接口保留作兜底。
     suspend fun neteaseSearch(kw: String, limit: Int = 8): List<SongInfo> {
         val trimmed = kw.trim()
         if (trimmed.isEmpty()) return emptyList()
-        val url = "https://music.163.com/api/search/get/web?s=${enc(trimmed)}&type=1&limit=$limit&offset=0"
+        return neteaseCloud(trimmed, limit).ifEmpty { neteaseLegacy(trimmed, limit) }
+    }
+
+    private suspend fun neteaseCloud(kw: String, limit: Int): List<SongInfo> {
+        val url = "https://music.163.com/api/cloudsearch/pc?s=${enc(kw)}&type=1&limit=$limit&offset=0"
+        val obj = getJSON(url, referer = "https://music.163.com/") ?: return emptyList()
+        val songs = obj.optJSONObject("result")?.optJSONArray("songs") ?: return emptyList()
+        return (0 until songs.length()).mapNotNull { i ->
+            val s = songs.getJSONObject(i)
+            val al = s.optJSONObject("al")
+            val ar = s.optJSONArray("ar")
+            var pic = al?.optString("picUrl")?.takeIf { it.isNotEmpty() }
+            if (pic?.startsWith("http://") == true) pic = "https://" + pic.drop(7)
+            SongInfo(
+                title = s.optString("name").takeIf { it.isNotEmpty() },
+                artist = ar?.optJSONObject(0)?.optString("name"),
+                album = al?.optString("name"),
+                coverURL = pic,
+                neteaseID = if (s.has("id")) s.getInt("id") else null,
+                duration = s.optLong("dt", 0).takeIf { it > 0 }?.let { it / 1000.0 },
+                source = "网易云",
+            )
+        }
+    }
+
+    private suspend fun neteaseLegacy(kw: String, limit: Int): List<SongInfo> {
+        val url = "https://music.163.com/api/search/get/web?s=${enc(kw)}&type=1&limit=$limit&offset=0"
         val obj = getJSON(url, referer = "https://music.163.com/") ?: return emptyList()
         val songs = obj.optJSONObject("result")?.optJSONArray("songs") ?: return emptyList()
         return (0 until songs.length()).mapNotNull { i ->
@@ -322,14 +354,17 @@ object Scraper {
         val hasArtist = !artist.isNullOrBlank() || !artistHint.isNullOrBlank()
         val threshold = if (hasArtist) 0.70 else 0.78
 
-        var best = pickBest(neteaseSearch(kw, 10), cleanTitle, artist, artistHint)
+        // ① QQ 音乐优先：实测对「歌名 歌手」复合词质量最好，第一条基本就是正版
+        // （网易云接口 2026-11 起对复合词要么 0 条、要么满屏翻唱，降为兜底）
+        var best = pickBest(qqSearch(kw, 10), cleanTitle, artist, artistHint)
         if ((best?.score ?: 0.0) < threshold && plain != kw) {
-            val alt = pickBest(neteaseSearch(plain, 10), cleanTitle, artist, artistHint)
+            val alt = pickBest(qqSearch(plain, 10), cleanTitle, artist, artistHint)
             if (alt != null && alt.score > (best?.score ?: 0.0)) best = alt
         }
+        // ② 网易云兜底（两边版权库不同）
         if ((best?.score ?: 0.0) < threshold) {
-            var pool = qqSearch(kw, 10)
-            if (pool.isEmpty() && plain != kw) pool += qqSearch(plain, 10)
+            var pool = neteaseSearch(kw, 10)
+            if (pool.isEmpty() && plain != kw) pool += neteaseSearch(plain, 10)
             val alt = pickBest(pool, cleanTitle, artist, artistHint)
             if (alt != null && alt.score > (best?.score ?: 0.0)) best = alt
         }

@@ -425,6 +425,14 @@ fun FolderBrowserDialog(
 @Composable
 fun LibraryDetailScreen(libraryID: String, onClose: () -> Unit) {
     val lib = LibraryStore.library(libraryID) ?: return
+    var sortMode by remember { mutableStateOf(TrackSortMode.SOURCE) }
+    val hotMap by HotRanker.entries
+    val ranking by HotRanker.ranking
+    val hotProgress by HotRanker.progress
+    // 分数每更新一批就重排一次，热度是渐进到位的
+    val tracks = remember(lib, sortMode, hotMap) { HotRanker.sorted(lib.tracks, sortMode) }
+    LaunchedEffect(sortMode, lib.id) { HotRanker.prefetch(lib.tracks, sortMode) }
+
     Surface(Modifier.fillMaxSize()) {
         Column {
             Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -434,14 +442,40 @@ fun LibraryDetailScreen(libraryID: String, onClose: () -> Unit) {
                     Text("${lib.tracks.size} 首 · ${lib.albumCount} 张专辑 · ${formatDuration(lib.totalDuration)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                // 排序：遥控器/手指都能聚焦点开
+                var sortOpen by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { sortOpen = true }) {
+                        Text(
+                            if (sortMode == TrackSortMode.HOT) "🔥 热度" else sortMode.label,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                    DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                        TrackSortMode.entries.forEach { m ->
+                            DropdownMenuItem(text = {
+                                Text(if (m == sortMode) "✓ ${m.label}" else m.label)
+                            }, onClick = {
+                                sortMode = m
+                                sortOpen = false
+                            })
+                        }
+                    }
+                }
                 IconButton(onClick = {
-                    val tracks = lib.tracks
                     if (tracks.isNotEmpty()) PlayerManager.playAt(tracks.map { it.toTrack() }, 0)
                 }) {
                     Icon(Icons.Filled.PlayArrow, null, tint = MaterialTheme.colorScheme.primary)
                 }
             }
-            val tracks = lib.tracks
+            if (sortMode == TrackSortMode.HOT && ranking) {
+                Text(
+                    "正在获取热度（网易云 + 酷我）${hotProgress.first}/${hotProgress.second}，排序会随结果刷新",
+                    Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             LazyColumn {
                 itemsIndexed(tracks, key = { _, t -> t.id }) { idx, t ->
                     TrackRow(lib, t, tracks, indexInQueue = idx)
@@ -482,17 +516,50 @@ fun SearchTab() {
 fun FavoritesTab() {
     val favs = LibraryStore.favorites.toList()
     val all = remember(favs) { favs.mapNotNull { LibraryStore.findTrack(it) } }
+    var sortMode by remember { mutableStateOf(TrackSortMode.SOURCE) }
+    val hotMap by HotRanker.entries
+    val ranking by HotRanker.ranking
+    val hotProgress by HotRanker.progress
+    val ordered = remember(all, sortMode, hotMap) { HotRanker.sortedBy(all, sortMode) { it.second } }
+    LaunchedEffect(sortMode) { HotRanker.prefetch(all.map { it.second }, sortMode) }
 
     Column(Modifier.fillMaxSize()) {
-        Text("收藏", Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            style = MaterialTheme.typography.headlineMedium)
-        if (all.isEmpty()) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("收藏", style = MaterialTheme.typography.headlineMedium)
+            Spacer(Modifier.weight(1f))
+            var sortOpen by remember { mutableStateOf(false) }
+            Box {
+                TextButton(onClick = { sortOpen = true }) {
+                    Text(if (sortMode == TrackSortMode.HOT) "🔥 热度" else sortMode.label)
+                }
+                DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                    TrackSortMode.entries.forEach { m ->
+                        DropdownMenuItem(text = {
+                            Text(if (m == sortMode) "✓ ${m.label}" else m.label)
+                        }, onClick = {
+                            sortMode = m
+                            sortOpen = false
+                        })
+                    }
+                }
+            }
+        }
+        if (sortMode == TrackSortMode.HOT && ranking) {
+            Text(
+                "正在获取热度（网易云 + 酷我）${hotProgress.first}/${hotProgress.second}",
+                Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (ordered.isEmpty()) {
             Text("还没有收藏。播放页点☆收藏，或列表里的红心。",
                 Modifier.padding(32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             LazyColumn {
-                itemsIndexed(all, key = { _, r -> r.second.id }) { idx, (lib, t) ->
-                    TrackRow(lib, t, all.map { it.second }, indexInQueue = idx)
+                itemsIndexed(ordered, key = { _, r -> r.second.id }) { idx, (lib, t) ->
+                    TrackRow(lib, t, ordered.map { it.second }, indexInQueue = idx)
                 }
             }
         }
