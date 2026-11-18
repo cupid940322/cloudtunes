@@ -21,15 +21,25 @@ struct FolderPickerView: View {
     private var inLibraryFolderIDs: Set<String> {
         var ids = Set<String>()
         for lib in store.libraries where lib.providerKind == kind {
-            ids.insert(lib.folderID)
-            for t in lib.tracks { ids.insert(t.parentID) }
+            // 空串是光鸭的根目录 id，放进来匹配不到任何一行，交给 coversWholeDrive
+            if !lib.folderID.isEmpty { ids.insert(lib.folderID) }
+            for t in lib.tracks where !t.parentID.isEmpty { ids.insert(t.parentID) }
         }
         return ids
     }
 
+    /// 是否有「直接以网盘根目录为根」的库：这种库下整个网盘都算已入库
+    private var coversWholeDrive: Bool {
+        let root = ProviderRegistry.rootID(of: kind)
+        return store.libraries.contains {
+            $0.providerKind == kind && ($0.folderID == root || ($0.folderID.isEmpty && root.isEmpty))
+        }
+    }
+
     /// 当前所在文件夹是否已经是某个音乐库的根
     private var isCurrentFolderALibrary: Bool {
-        store.libraries.contains { $0.providerKind == kind && $0.folderID == currentID }
+        if coversWholeDrive { return true }
+        return store.libraries.contains { $0.providerKind == kind && $0.folderID == currentID }
     }
 
     private var currentID: String { path.last?.id ?? ProviderRegistry.rootID(of: kind) }
@@ -168,7 +178,7 @@ struct FolderPickerView: View {
                                             .foregroundStyle(.primary)
                                             .lineLimit(1)
                                         Spacer(minLength: 4)
-                                        if inLibrary.contains(folder.id) {
+                                        if coversWholeDrive || inLibrary.contains(folder.id) {
                                             Label("已入库", systemImage: "checkmark.circle.fill")
                                                 .font(.system(size: 9, weight: .semibold))
                                                 .foregroundStyle(Theme.accent)

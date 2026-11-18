@@ -26,15 +26,45 @@ struct FileBrowserView: View {
     private var inLibraryFolderIDs: Set<String> {
         var ids = Set<String>()
         for lib in store.libraries where lib.providerKind == kind {
-            ids.insert(lib.folderID)
-            for t in lib.tracks { ids.insert(t.parentID) }
+            // 空串是光鸭的根目录 id，塞进集合也匹配不到任何一行，单独用 coversWholeDrive 处理
+            if !lib.folderID.isEmpty { ids.insert(lib.folderID) }
+            for t in lib.tracks where !t.parentID.isEmpty { ids.insert(t.parentID) }
         }
         return ids
     }
 
+    /// 这个网盘里是否有「直接以网盘根目录为根」的库。
+    /// 有的话整个网盘都在库里，每一层文件夹都该带标记——原来只往集合里塞了个空串，
+    /// 结果一行都匹配不上，看起来就像「标记功能坏了」。
+    private var coversWholeDrive: Bool {
+        let root = ProviderRegistry.rootID(of: kind)
+        return store.libraries.contains {
+            $0.providerKind == kind && ($0.folderID == root || ($0.folderID.isEmpty && root.isEmpty))
+        }
+    }
+
+    /// 当前浏览路径已经落在某个库里面（库根是路径上的某一层，或整个网盘就是一个库）。
+    /// 库内的文件夹即便自己没直接装歌（歌在更深的子目录里），也属于这个库，同样该有标记——
+    /// 原来只认「直接装歌的目录」，中间层一律没标记，看着就像标记丢了。
+    private var insideLibrary: Bool {
+        if coversWholeDrive { return true }
+        let roots = Set(store.libraries.filter { $0.providerKind == kind }.map { $0.folderID })
+        guard !roots.isEmpty else { return false }
+        return path.contains { roots.contains($0.id) }
+    }
+
+    /// 诊断：这个网盘其实有库，但一个都对不上 → 多半是库里的网盘字段与当前页面不一致
+    private var libraryMismatchHint: String? {
+        guard !store.libraries.isEmpty else { return nil }
+        guard !store.libraries.contains(where: { $0.providerKind == kind }) else { return nil }
+        let raws = Set(store.libraries.map { $0.providerKindRaw }).sorted().joined(separator: "、")
+        return "已入库标记不可用：库里记的网盘类型是「\(raws)」，与当前页面（\(kind.rawValue)）不一致"
+    }
+
     /// 当前所在文件夹是否已是某个音乐库的根
     private var isCurrentFolderALibrary: Bool {
-        store.libraries.contains { $0.providerKind == kind && $0.folderID == currentFolderID }
+        if coversWholeDrive { return true }
+        return store.libraries.contains { $0.providerKind == kind && $0.folderID == currentFolderID }
     }
 
     var body: some View {
@@ -73,6 +103,13 @@ struct FileBrowserView: View {
         let inLibrary = inLibraryFolderIDs
         return ScrollView {
             VStack(spacing: 14) {
+                if let hint = libraryMismatchHint {
+                    Text(hint)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, Theme.pagePadding)
+                }
                 if !path.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -213,7 +250,7 @@ struct FileBrowserView: View {
             Spacer(minLength: 4)
             if file.isFolder {
                 // 已入库标记：这个文件夹是音乐库根，或里面的歌已经扫进库
-                if inLibrary.contains(file.id) {
+                if insideLibrary || inLibrary.contains(file.id) {
                     Label("已入库", systemImage: "checkmark.circle.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.accent)
