@@ -423,7 +423,7 @@ fun FolderBrowserDialog(
 // ───────────────────────── 乐库详情 ─────────────────────────
 
 @Composable
-fun LibraryDetailScreen(libraryID: String, onClose: () -> Unit) {
+fun LibraryDetailScreen(libraryID: String, onClose: () -> Unit, tv: Boolean = false) {
     val lib = LibraryStore.library(libraryID) ?: return
     var sortMode by remember { mutableStateOf(TrackSortMode.SOURCE) }
     val hotMap by HotRanker.entries
@@ -442,23 +442,36 @@ fun LibraryDetailScreen(libraryID: String, onClose: () -> Unit) {
                     Text("${lib.tracks.size} 首 · ${lib.albumCount} 张专辑 · ${formatDuration(lib.totalDuration)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                // 排序：遥控器/手指都能聚焦点开
-                var sortOpen by remember { mutableStateOf(false) }
-                Box {
-                    TextButton(onClick = { sortOpen = true }) {
+                // 排序：手机走下拉菜单；TV 用「按一下换一种」的单键循环
+                // （TV 的 DropdownMenu 是 Popup，遥控器 D-pad 未必进得去，循环按钮则一定点得动）
+                if (tv) {
+                    TextButton(onClick = {
+                        val all = TrackSortMode.entries
+                        sortMode = all[(all.indexOf(sortMode) + 1) % all.size]
+                    }) {
                         Text(
-                            if (sortMode == TrackSortMode.HOT) "🔥 热度" else sortMode.label,
+                            if (sortMode == TrackSortMode.HOT) "🔥 热度" else "排序：${sortMode.label}",
                             style = MaterialTheme.typography.labelLarge,
                         )
                     }
-                    DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
-                        TrackSortMode.entries.forEach { m ->
-                            DropdownMenuItem(text = {
-                                Text(if (m == sortMode) "✓ ${m.label}" else m.label)
-                            }, onClick = {
-                                sortMode = m
-                                sortOpen = false
-                            })
+                } else {
+                    var sortOpen by remember { mutableStateOf(false) }
+                    Box {
+                        TextButton(onClick = { sortOpen = true }) {
+                            Text(
+                                if (sortMode == TrackSortMode.HOT) "🔥 热度" else sortMode.label,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                        DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                            TrackSortMode.entries.forEach { m ->
+                                DropdownMenuItem(text = {
+                                    Text(if (m == sortMode) "✓ ${m.label}" else m.label)
+                                }, onClick = {
+                                    sortMode = m
+                                    sortOpen = false
+                                })
+                            }
                         }
                     }
                 }
@@ -513,7 +526,7 @@ fun SearchTab() {
 // ───────────────────────── 收藏 ─────────────────────────
 
 @Composable
-fun FavoritesTab() {
+fun FavoritesTab(tv: Boolean = false) {
     val favs = LibraryStore.favorites.toList()
     val all = remember(favs) { favs.mapNotNull { LibraryStore.findTrack(it) } }
     var sortMode by remember { mutableStateOf(TrackSortMode.SOURCE) }
@@ -528,19 +541,31 @@ fun FavoritesTab() {
             verticalAlignment = Alignment.CenterVertically) {
             Text("收藏", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.weight(1f))
-            var sortOpen by remember { mutableStateOf(false) }
-            Box {
-                TextButton(onClick = { sortOpen = true }) {
-                    Text(if (sortMode == TrackSortMode.HOT) "🔥 热度" else sortMode.label)
+            if (tv) {
+                TextButton(onClick = {
+                    val modes = TrackSortMode.entries
+                    sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
+                }) {
+                    Text(
+                        if (sortMode == TrackSortMode.HOT) "🔥 热度" else "排序：${sortMode.label}",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                 }
-                DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
-                    TrackSortMode.entries.forEach { m ->
-                        DropdownMenuItem(text = {
-                            Text(if (m == sortMode) "✓ ${m.label}" else m.label)
-                        }, onClick = {
-                            sortMode = m
-                            sortOpen = false
-                        })
+            } else {
+                var sortOpen by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { sortOpen = true }) {
+                        Text(if (sortMode == TrackSortMode.HOT) "🔥 热度" else sortMode.label)
+                    }
+                    DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                        TrackSortMode.entries.forEach { m ->
+                            DropdownMenuItem(text = {
+                                Text(if (m == sortMode) "✓ ${m.label}" else m.label)
+                            }, onClick = {
+                                sortMode = m
+                                sortOpen = false
+                            })
+                        }
                     }
                 }
             }

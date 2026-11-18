@@ -182,12 +182,12 @@ fun TVApp() {
                     when (tab) {
                         0 -> TVHome(openLibrary = { openLibraryID = it }, onOpenPlayer = { showPlayer = true })
                         1 -> SearchTab()
-                        2 -> FavoritesTab()
+                        2 -> FavoritesTab(tv = true)
                         3 -> ProfileTab()
                     }
                     val libID = openLibraryID
                     if (libID != null) {
-                        LibraryDetailScreen(libID, onClose = { openLibraryID = null })
+                        LibraryDetailScreen(libID, onClose = { openLibraryID = null }, tv = true)
                     }
                 }
 
