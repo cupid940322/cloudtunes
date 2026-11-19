@@ -34,17 +34,25 @@ enum TrackSortMode: String, CaseIterable, Identifiable {
 
 /// 跨平台音乐热度查询 + 本地缓存。
 ///
-/// **数据来源（实测过，别的源拿不到数）**
-/// - 网易云 `cloudsearch` 的 `pop` 字段：0~100 的流行度，唯一能直接拿到的成熟热度值
-/// - 酷我 `search/r.s` 的 `PLAYCNT` 字段：播放量
-/// - QQ 音乐、酷狗的**搜索接口不返回任何数值型热度**（只能再发一次详情请求，
-///   成本翻倍且字段随时会变），所以暂不接入
+/// **为什么是三个信号**
+/// 只用网易云 + 酷我会有硬伤：很多歌（尤其周杰伦、五月天等）在这两家没有版权，
+/// 查不到分就被当成 0 分垫底，可它们在全网其实很热。所以换成下面三个：
 ///
-/// **综合分**：两源分别归一化到 0~1，再按「当前实际拿到的源」重新归一权重
-/// （缺一个源不会把分数拉低，只会用剩下的源算）。网易云权重 0.65、酷我 0.35。
+/// - 网易云 `cloudsearch` 的 `pop`（0~100 站内流行度）—— 有版权时最准
+/// - 酷狗 `song_search_v2` 的 `OwnerCount`（加入歌单的用户数）—— 版权覆盖极广，
+///   搜索接口直接返回数值，实测 8/8 都能匹配到正版
+/// - **QQ 音乐热歌榜**（topId 26）—— 官方定义就是「按播放、下载、收藏综合热度排名前 300 首」，
+///   一次请求拿全榜，专门补 QQ 独占版权的歌（周杰伦在榜 11 首）
 ///
-/// **成本控制**：每首歌 2 个请求，结果缓存 7 天。首次切到热度排序时会显示进度，
-/// 列表越短越快；缓存命中后排序是纯本地计算，不联网。
+/// 酷我（`PLAYCNT`）曾经用过，后来实测发现它的搜索接口返回的几乎全是 KTV 伴奏、
+/// DJ 版、演唱会片段，连正版都匹配不到，数值又只有几十几百的量级 —— 是纯噪声，已移除。
+///
+/// **综合分**：三个信号各自归一化到 0~1 后加权（网易云 0.35 / 酷狗 0.40 / QQ榜 0.25），
+/// 分母只算「当前实际拿到的那几个源」，缺源不会把分数拉低。
+/// 只有单个源命中时整体乘 0.90：证据不足，不该封顶。
+///
+/// **成本控制**：每首歌 2 个请求（QQ 榜是整榜一次拉，摊到每首约等于 0），结果缓存 7 天；
+/// 榜单缓存 12 小时。缓存命中后排序是纯本地计算，不联网。
 @MainActor
 final class HotRanker: ObservableObject {
     static let shared = HotRanker()
@@ -54,8 +62,10 @@ final class HotRanker: ObservableObject {
         var score: Double
         /// 网易云归一化分（nil 表示没匹配到）
         var netease: Double?
-        /// 酷我归一化分（nil 表示没匹配到）
-        var kuwo: Double?
+        /// 酷狗归一化分（nil 表示没匹配到）
+        var kugou: Double? = nil
+        /// QQ 热歌榜归一化分（nil 表示没进榜）
+        var qq: Double? = nil
         /// 写入时间（秒）
         var at: TimeInterval
     }
@@ -73,12 +83,13 @@ final class HotRanker: ObservableObject {
     /// 一批同时查几首（每首内部还会并发两个源）
     private let batchSize = 6
 
-    private static let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+    fileprivate static let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
         + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
     private var fileURL: URL {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appendingPathComponent("hot-rank.json")
+        // v2：加了酷狗和 QQ 榜两个源，旧缓存（只有两源的分）直接失效重算
+        return dir.appendingPathComponent("hot-rank-v2.json")
     }
 
     // MARK: - 读取 / 写入
@@ -197,6 +208,8 @@ final class HotRanker: ObservableObject {
 
         rankTask = Task { [weak self] in
             guard let self else { return }
+            // QQ 热歌榜是整榜一次拉（约 0.3 秒），拿到后所有歌共享，不用每首查
+            let chart = await QQChartStore.shared.scores()
             var i = 0
             while i < wanted.count {
                 if Task.isCancelled { break }
@@ -204,7 +217,7 @@ final class HotRanker: ObservableObject {
                 let got = await withTaskGroup(of: (String, Entry?).self) { group -> [(String, Entry?)] in
                     for item in slice {
                         group.addTask {
-                            (item.key, await HotRanker.fetch(title: item.title, artist: item.artist))
+                            (item.key, await HotRanker.fetch(title: item.title, artist: item.artist, chart: chart))
                         }
                     }
                     var out: [(String, Entry?)] = []
@@ -214,7 +227,7 @@ final class HotRanker: ObservableObject {
                 if Task.isCancelled { break }
                 for (key, entry) in got {
                     // 查不到也写一条 0 分：避免每次切排序都重试一遍
-                    self.entries[key] = entry ?? Entry(score: 0, netease: nil, kuwo: nil,
+                    self.entries[key] = entry ?? Entry(score: 0, netease: nil,
                                                        at: Date().timeIntervalSince1970)
                 }
                 i += slice.count
@@ -236,18 +249,42 @@ final class HotRanker: ObservableObject {
 
     // MARK: - 网络
 
-    /// 一首歌的综合分
-    nonisolated static func fetch(title: String, artist: String) async -> Entry? {
+    /// 一首歌的综合分。`chart` 是 QQ 热歌榜的「歌名|歌手 → 归一化分」查表
+    nonisolated static func fetch(title: String, artist: String, chart: [String: Double]) async -> Entry? {
         async let n = neteaseScore(title: title, artist: artist)
-        async let k = kuwoScore(title: title, artist: artist)
-        let (nv, kv) = await (n, k)
-        guard nv != nil || kv != nil else { return nil }
+        async let g = kugouScore(title: title, artist: artist)
+        let (nv, gv) = await (n, g)
+        let qv = chartScore(title: title, artist: artist, chart: chart)
+        guard nv != nil || gv != nil || qv != nil else { return nil }
 
-        var num = 0.0, den = 0.0
-        if let nv { num += nv * 0.65; den += 0.65 }
-        if let kv { num += kv * 0.35; den += 0.35 }
-        let score = den > 0 ? num / den : 0
-        return Entry(score: score, netease: nv, kuwo: kv, at: Date().timeIntervalSince1970)
+        var num = 0.0, den = 0.0, hits = 0
+        if let nv { num += nv * 0.35; den += 0.35; hits += 1 }
+        if let gv { num += gv * 0.40; den += 0.40; hits += 1 }
+        if let qv { num += qv * 0.25; den += 0.25; hits += 1 }
+        var score = den > 0 ? num / den : 0
+        // 单个源命中：证据不足，压一下，别让「只有网易云一个 pop=100」直接封顶
+        if hits == 1 { score *= 0.90 }
+        return Entry(score: score, netease: nv, kugou: gv, qq: qv,
+                     at: Date().timeIntervalSince1970)
+    }
+
+    /// 从榜单查表里取分。歌手可能是「许嵩、何曼婷」这种多歌手，逐个试
+    nonisolated static func chartScore(title: String, artist: String, chart: [String: Double]) -> Double? {
+        guard !chart.isEmpty else { return nil }
+        if let v = chart[cacheKey(title: title, artist: artist)] { return v }
+        for a in splitArtists(artist) {
+            if let v = chart[cacheKey(title: title, artist: a)] { return v }
+        }
+        return nil
+    }
+
+    /// 把「许嵩、何曼婷」「mj apanay/aren park」这类多歌手串拆开
+    nonisolated static func splitArtists(_ raw: String) -> [String] {
+        guard !raw.isEmpty else { return [] }
+        let seps = CharacterSet(charactersIn: "、/／&,，;；+")
+        return raw.components(separatedBy: seps)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     /// 网易云：`pop` 0~100 → 0~1
@@ -290,83 +327,166 @@ final class HotRanker: ObservableObject {
         return min(1, max(0, bestPop / 100))
     }
 
-    /// 酷我：`PLAYCNT` 播放量 → 对数归一（1 万次播放约等于 1.0）
-    private nonisolated static func kuwoScore(title: String, artist: String) async -> Double? {
+    /// 酷狗：`OwnerCount`（把这首歌加进自己歌单的用户数）→ 对数归一，1 千万约等于 1.0。
+    /// 酷狗版权覆盖极广，是「其它平台没版权」时最主要的兜底信号。
+    private nonisolated static func kugouScore(title: String, artist: String) async -> Double? {
         let kw = artist.isEmpty ? title : "\(title) \(artist)"
-        var comps = URLComponents(string: "https://search.kuwo.cn/r.s")!
+        var comps = URLComponents(string: "https://songsearch.kugou.com/song_search_v2")!
         comps.queryItems = [
-            URLQueryItem(name: "all", value: kw),
-            URLQueryItem(name: "ft", value: "music"),
-            URLQueryItem(name: "itemset", value: "web_2013"),
-            URLQueryItem(name: "client", value: "kt"),
-            URLQueryItem(name: "pn", value: "0"),
-            URLQueryItem(name: "rn", value: "8"),
-            URLQueryItem(name: "rformat", value: "json"),
-            URLQueryItem(name: "encoding", value: "utf8"),
+            URLQueryItem(name: "keyword", value: kw),
+            URLQueryItem(name: "page", value: "1"),
+            URLQueryItem(name: "pagesize", value: "8"),
+            URLQueryItem(name: "platform", value: "WebFilter"),
+            URLQueryItem(name: "userid", value: "-1"),
+            URLQueryItem(name: "clientver", value: "2000"),
+            URLQueryItem(name: "iscorrection", value: "1"),
+            URLQueryItem(name: "privilege_filter", value: "0"),
+            URLQueryItem(name: "filter", value: "10"),
         ]
         guard let url = comps.url else { return nil }
         var req = URLRequest(url: url)
         req.timeoutInterval = 10
-        req.setValue("https://www.kuwo.cn/", forHTTPHeaderField: "Referer")
+        req.setValue("https://www.kugou.com/", forHTTPHeaderField: "Referer")
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
 
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
-              let text = String(data: data, encoding: .utf8) else { return nil }
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let d = root["data"] as? [String: Any],
+              let lists = d["lists"] as? [[String: Any]] else { return nil }
 
         var bestSim = 0.0
-        var bestPlay = 0.0
-        for item in kuwoItems(text) {
-            let sim = TextMatch.similarity(title, item.name)
+        var bestOwner = 0.0
+        for s in lists {
+            let name = s["SongName"] as? String ?? ""
+            let singer = s["SingerName"] as? String ?? ""
+            let sim = TextMatch.similarity(title, name)
             guard sim >= 0.55 else { continue }
-            if !artist.isEmpty, TextMatch.similarity(artist, item.artist) < 0.5 { continue }
-            guard let play = Double(item.play) else { continue }
-            if sim > bestSim { bestSim = sim; bestPlay = play }
+            if !artist.isEmpty {
+                let hit = splitArtists(singer).contains { TextMatch.similarity(artist, $0) >= 0.5 }
+                guard hit else { continue }
+            }
+            let owner = (s["OwnerCount"] as? NSNumber)?.doubleValue ?? 0
+            guard owner > 0 else { continue }
+            if sim > bestSim { bestSim = sim; bestOwner = owner }
         }
         guard bestSim > 0 else { return nil }
-        return min(1, log10(1 + bestPlay) / 4)
+        return min(1, log10(1 + bestOwner) / 7)
+    }
+}
+
+// MARK: - QQ 音乐热歌榜
+
+/// QQ 音乐热歌榜（topId 26）。
+///
+/// 官方对这份榜单的定义：「按照歌曲在 QQ 音乐移动端登录用户中产生的完整播放、下载数、
+/// 收藏数综合热度进行排名」，每日更新，前 300 首。正好补上 QQ 独占版权的歌
+/// （周杰伦在榜 11 首、许嵩 6 首，而这些在网易云/酷我多半查不到）。
+///
+/// 整榜一次请求（实测 0.3 秒 / 299 首），缓存 12 小时。榜外的歌 `qq` 分为 nil，
+/// **不参与加权**（所以不会把其它源的分拉低）。
+actor QQChartStore {
+    static let shared = QQChartStore()
+
+    private struct Disk: Codable {
+        var at: Double
+        var total: Int
+        var ranks: [String: Int]
     }
 
-    /// 酷我返回的是**单引号 JSON**（不是合法 JSON），而且夹着 `&nbsp;`、`\\u0026`，
-    /// 所以不能用 JSONSerialization。这里按 `{...}` 平衡切出每首歌，再按 `'KEY':'value'` 取字段。
-    private nonisolated static func kuwoItems(_ text: String) -> [(name: String, artist: String, play: String)] {
-        guard let head = text.range(of: "'abslist':[") else { return [] }
-        var items: [(String, String, String)] = []
-        var depth = 0
-        var start: String.Index?
-        var i = head.upperBound
-        while i < text.endIndex {
-            let c = text[i]
-            if c == "{" {
-                if depth == 0 { start = i }
-                depth += 1
-            } else if c == "}" {
-                depth -= 1
-                if depth == 0, let s = start {
-                    let obj = String(text[s...i])
-                    items.append((kuwoField(obj, "SONGNAME"),
-                                  kuwoField(obj, "ARTIST"),
-                                  kuwoField(obj, "PLAYCNT")))
-                    start = nil
-                }
-            }
-            i = text.index(after: i)
+    private var memo: Disk?
+    private var inflight: Task<[String: Double], Never>?
+
+    private static let ttl: Double = 12 * 3600
+
+    private static var fileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("qq-chart.json")
+    }
+
+    /// 并发调用只会真正发一次请求
+    func scores() async -> [String: Double] {
+        if let t = inflight { return await t.value }
+        if let disk = memo ?? loadDisk(),
+           Date().timeIntervalSince1970 - disk.at < Self.ttl,
+           disk.total > 0 {
+            memo = disk
+            return Self.expand(disk)
         }
-        return items
+        let task = Task { await self.refresh() }
+        inflight = task
+        let out = await task.value
+        inflight = nil
+        return out
     }
 
-    private nonisolated static func kuwoField(_ obj: String, _ key: String) -> String {
-        guard let r = obj.range(of: "'\(key)':'") else { return "" }
-        let rest = obj[r.upperBound...]
-        guard let end = rest.firstIndex(of: "'") else { return "" }
-        return cleanKuwo(String(rest[..<end]))
+    private func refresh() async -> [String: Double] {
+        let body: [String: Any] = [
+            "comm": ["ct": 24, "cv": 0],
+            "req": [
+                "module": "musicToplist.ToplistInfoServer",
+                "method": "GetDetail",
+                "param": ["topId": 26, "offset": 0, "num": 300, "period": ""],
+            ],
+        ]
+        var req = URLRequest(url: URL(string: "https://u.y.qq.com/cgi-bin/musicu.fcg")!)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 12
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("https://y.qq.com/", forHTTPHeaderField: "Referer")
+        req.setValue(HotRanker.ua, forHTTPHeaderField: "User-Agent")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let reqDict = root["req"] as? [String: Any],
+              let level1 = reqDict["data"] as? [String: Any],
+              let level2 = level1["data"] as? [String: Any],
+              let songs = level2["song"] as? [[String: Any]] else {
+            // 拉不到就用过期缓存，有总比没有好
+            if let disk = memo ?? loadDisk(), disk.total > 0 { return Self.expand(disk) }
+            return [:]
+        }
+
+        var ranks: [String: Int] = [:]
+        for s in songs {
+            guard let rank = (s["rank"] as? NSNumber)?.intValue, rank > 0 else { continue }
+            let title = s["title"] as? String ?? ""
+            guard !title.isEmpty else { continue }
+            let singers = HotRanker.splitArtists(s["singerName"] as? String ?? "")
+            if singers.isEmpty {
+                ranks[HotRanker.cacheKey(title: title, artist: nil)] = rank
+            } else {
+                for a in singers { ranks[HotRanker.cacheKey(title: title, artist: a)] = rank }
+            }
+        }
+        let total = max((level2["totalNum"] as? NSNumber)?.intValue ?? 0, songs.count)
+        let disk = Disk(at: Date().timeIntervalSince1970, total: total, ranks: ranks)
+        memo = disk
+        if let payload = try? JSONEncoder().encode(disk) {
+            try? payload.write(to: Self.fileURL, options: .atomic)
+        }
+        return Self.expand(disk)
     }
 
-    private nonisolated static func cleanKuwo(_ s: String) -> String {
-        s.replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "\\u0026", with: "&")
-            .replacingOccurrences(of: "\\/", with: "/")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private func loadDisk() -> Disk? {
+        guard let data = try? Data(contentsOf: Self.fileURL) else { return nil }
+        return try? JSONDecoder().decode(Disk.self, from: data)
+    }
+
+    /// 名次 → 0~1：第 1 名 1.0、第 300 名 0.35。
+    /// 给下限是因为「能进日榜前 300」本身已经是很强的热度信号。
+    private static func expand(_ disk: Disk) -> [String: Double] {
+        guard disk.total > 1 else { return [:] }
+        var out: [String: Double] = [:]
+        out.reserveCapacity(disk.ranks.count)
+        let span = Double(disk.total - 1)
+        for (key, rank) in disk.ranks {
+            let p = 1.0 - Double(rank - 1) / span
+            out[key] = 0.35 + 0.65 * max(0, min(1, p))
+        }
+        return out
     }
 }
 
@@ -443,7 +563,7 @@ struct TrackSortMenu: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("网易云 + 酷我")
+                    Text("网易云 + 酷狗 + QQ榜")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

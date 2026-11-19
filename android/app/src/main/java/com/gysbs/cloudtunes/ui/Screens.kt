@@ -483,7 +483,7 @@ fun LibraryDetailScreen(libraryID: String, onClose: () -> Unit, tv: Boolean = fa
             }
             if (sortMode == TrackSortMode.HOT && ranking) {
                 Text(
-                    "正在获取热度（网易云 + 酷我）${hotProgress.first}/${hotProgress.second}，排序会随结果刷新",
+                    "正在获取热度（网易云 + 酷狗 + QQ榜）${hotProgress.first}/${hotProgress.second}，排序会随结果刷新",
                     Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -572,7 +572,7 @@ fun FavoritesTab(tv: Boolean = false) {
         }
         if (sortMode == TrackSortMode.HOT && ranking) {
             Text(
-                "正在获取热度（网易云 + 酷我）${hotProgress.first}/${hotProgress.second}",
+                "正在获取热度（网易云 + 酷狗 + QQ榜）${hotProgress.first}/${hotProgress.second}",
                 Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
